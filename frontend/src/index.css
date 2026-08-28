@@ -1,0 +1,75 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0d0d18;
+  --bg1: #11111e;
+  --bg2: #17172a;
+  --bg3: #1e1e35;
+  --border: #27274a;
+  --border2: #33335a;
+  --text: #e4e6f4;
+  --text2: #9a9dc8;
+  --text3: #5e6090;
+  --accent: #7c3aed;
+  --accent2: #6d28d9;
+  --green: #22c55e;
+  --red: #ef4444;
+  --yellow: #f59e0b;
+  --blue: #3b82f6;
+  --font: 'Inter', sans-serif;
+  --mono: 'JetBrains Mono', monospace;
+}
+
+html, body, #root { height: 100%; width: 100%; overflow: hidden; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); font-size: 13px; -webkit-font-smoothing: antialiased; }
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text3); }
+
+input, textarea, select {
+  font-family: var(--font); font-size: 13px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 7px 10px; width: 100%; outline: none;
+  transition: border-color 0.15s;
+}
+input:focus, textarea:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(124,58,237,0.15); }
+input::placeholder, textarea::placeholder { color: var(--text3); }
+select option { background: var(--bg2); }
+textarea { resize: vertical; min-height: 72px; font-family: var(--mono); font-size: 11px; line-height: 1.5; }
+
+button { font-family: var(--font); cursor: pointer; border: none; outline: none; }
+
+/* ReactFlow overrides */
+.react-flow__background { background: var(--bg) !important; }
+.react-flow__controls {
+  background: var(--bg2) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  overflow: hidden !important;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
+}
+.react-flow__controls-button {
+  background: var(--bg2) !important;
+  color: var(--text2) !important;
+  border: none !important;
+  border-bottom: 1px solid var(--border) !important;
+  width: 28px !important; height: 28px !important;
+}
+.react-flow__controls-button:hover { background: var(--bg3) !important; color: var(--text) !important; }
+.react-flow__controls-button:last-child { border-bottom: none !important; }
+.react-flow__controls-button svg { fill: currentColor !important; stroke: none !important; }
+.react-flow__minimap {
+  background: var(--bg2) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  overflow: hidden !important;
+}
+.react-flow__minimap-mask { fill: rgba(10,10,22,0.75) !important; }
+.react-flow__edge-path { stroke-width: 2 !important; }
+.react-flow__handle { border-radius: 50% !important; }
+.react-flow__handle:hover { transform: scale(1.3) !important; }
+.react-flow__node.selected .react-flow__handle { opacity: 1 !important; }
+.react-flow__attribution { display: none !important; }

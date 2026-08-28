@@ -1,0 +1,37 @@
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: autoflow-ingress
+  namespace: autoflow
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  tls:
+    - hosts:
+        - api.autoflow.io
+      secretName: autoflow-tls
+  rules:
+    - host: api.autoflow.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: autoflow-api
+                port:
+                  number: 80
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: autoflow-api-pdb
+  namespace: autoflow
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: autoflow-api

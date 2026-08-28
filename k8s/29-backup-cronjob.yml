@@ -1,0 +1,63 @@
+# Nightly logical backup, uploaded to S3. This is IN ADDITION TO your
+# managed database's own automated snapshots (RDS/Cloud SQL) — those cover
+# fast point-in-time restore; this covers portability (restoring into a
+# fresh instance, a different region, or a local box for debugging) and
+# gives you a second, independent copy in case the managed snapshots
+# themselves are ever unavailable.
+#
+# Enable S3 cross-region replication on the target bucket (or dual-write
+# to two buckets in different regions) to satisfy the "backups survive a
+# full region loss" requirement in DR_RUNBOOK.md.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: autoflow
+spec:
+  schedule: "0 2 * * *"   # 02:00 UTC daily
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: postgres:16-alpine
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+                  apk add --no-cache aws-cli >/dev/null
+                  TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+                  FILE="autoflow-${TIMESTAMP}.sql.gz"
+                  pg_dump "$DATABASE_URL_SYNC" | gzip > "/tmp/${FILE}"
+                  aws s3 cp "/tmp/${FILE}" "s3://${BACKUP_BUCKET}/postgres/${FILE}"
+                  # Retention: delete backups older than 35 days from this
+                  # prefix (keep at least 30 days + a few days' buffer).
+                  CUTOFF=$(date -u -d "35 days ago" +%Y%m%d)
+                  aws s3 ls "s3://${BACKUP_BUCKET}/postgres/" | while read -r _ _ _ name; do
+                    fdate=$(echo "$name" | grep -oE '[0-9]{8}' | head -1 || true)
+                    if [ -n "$fdate" ] && [ "$fdate" -lt "$CUTOFF" ]; then
+                      aws s3 rm "s3://${BACKUP_BUCKET}/postgres/${name}"
+                    fi
+                  done
+              env:
+                - name: DATABASE_URL_SYNC
+                  # Plain psycopg-style DSN for pg_dump, not the asyncpg
+                  # URL the app uses — set this alongside DATABASE_URL in
+                  # the secrets store.
+                  valueFrom:
+                    secretKeyRef:
+                      name: autoflow-secrets
+                      key: DATABASE_URL_SYNC
+                - name: BACKUP_BUCKET
+                  value: "autoflow-backups-prod"
+                - name: AWS_REGION
+                  value: "us-east-1"
+              resources:
+                requests: { cpu: "250m", memory: "256Mi" }
+                limits: { cpu: "1000m", memory: "1Gi" }

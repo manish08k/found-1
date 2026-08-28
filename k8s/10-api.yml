@@ -1,0 +1,103 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autoflow-api
+  namespace: autoflow
+  labels:
+    app: autoflow-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: autoflow-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: autoflow-api
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: api
+          image: ghcr.io/manish08k/autoflow-api:latest
+          command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: autoflow-config
+            - secretRef:
+                name: autoflow-secrets
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: autoflow-api
+  namespace: autoflow
+spec:
+  selector:
+    app: autoflow-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+  type: ClusterIP
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: autoflow-api-hpa
+  namespace: autoflow
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: autoflow-api
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

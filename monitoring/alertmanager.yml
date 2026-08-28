@@ -1,0 +1,42 @@
+# Template config — fill in real Slack/PagerDuty/email receivers before
+# relying on this. Route "page" severity to whatever wakes someone up
+# (PagerDuty/Opsgenie), "warn" to a Slack channel that's fine to check
+# during business hours.
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: slack-default
+  group_by: ["alertname"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 3h
+  routes:
+    - match:
+        severity: page
+      receiver: pagerduty
+      continue: true
+    - match:
+        severity: page
+      receiver: slack-critical
+    - match:
+        severity: warn
+      receiver: slack-default
+
+receivers:
+  - name: slack-default
+    slack_configs:
+      - api_url: "${SLACK_WEBHOOK_URL}"
+        channel: "#autoflow-alerts"
+        send_resolved: true
+
+  - name: slack-critical
+    slack_configs:
+      - api_url: "${SLACK_WEBHOOK_URL}"
+        channel: "#autoflow-incidents"
+        send_resolved: true
+
+  - name: pagerduty
+    pagerduty_configs:
+      - service_key: "${PAGERDUTY_SERVICE_KEY}"
+        send_resolved: true

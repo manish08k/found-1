@@ -1,0 +1,46 @@
+# Worker autoscaling by Celery queue depth (requires the KEDA operator
+# installed in-cluster: https://keda.sh). CPU-based HPA is the wrong
+# signal for Celery workers — a worker blocked on an HTTP call to a slow
+# webhook target sits at near-zero CPU while the queue backs up, so a
+# CPU-only HPA never scales it. Scale on what actually indicates backlog:
+# the length of the Redis lists backing each queue.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: autoflow-worker-scaler
+  namespace: autoflow
+spec:
+  scaleTargetRef:
+    name: autoflow-worker
+  minReplicaCount: 2
+  maxReplicaCount: 50
+  cooldownPeriod: 120
+  pollingInterval: 15
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 180
+          policies:
+            - type: Pods
+              value: 2
+              periodSeconds: 60
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 4
+              periodSeconds: 30
+  triggers:
+    - type: redis
+      metadata:
+        address: redis.autoflow.svc.cluster.local:6379
+        listName: workflows
+        listLength: "20"          # target ~20 queued tasks per replica
+        databaseIndex: "1"        # matches CELERY_BROKER_URL db index
+    - type: redis
+      metadata:
+        address: redis.autoflow.svc.cluster.local:6379
+        listName: polling
+        listLength: "20"
+        databaseIndex: "1"

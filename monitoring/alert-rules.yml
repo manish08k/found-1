@@ -1,0 +1,91 @@
+# Requires: this file loaded via Prometheus `rule_files`, Alertmanager
+# configured with real receivers (Slack/PagerDuty/email) in
+# monitoring/alertmanager.yml, and postgres_exporter / redis_exporter
+# running (see docker-compose.yml) for the infra-level rules below.
+# `celery_queue_length` and `autoflow_dlq_total` are app-emitted metrics —
+# confirm the names match whatever core/telemetry.py actually exports
+# before relying on these in production; adjust here if they differ.
+groups:
+  - name: autoflow-api
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+            /
+          sum(rate(http_requests_total[5m])) > 0.02
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "API 5xx rate above 2%"
+          description: "{{ $value | humanizePercentage }} of requests are failing (5xx) over the last 5m."
+
+      - alert: HighLatencyP99
+        expr: histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 2
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: "API p99 latency above 2s"
+
+      - alert: APIPodsDown
+        expr: kube_deployment_status_replicas_available{deployment="autoflow-api"} < 1
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "No healthy autoflow-api pods"
+
+  - name: autoflow-workers
+    rules:
+      - alert: CeleryQueueBacklog
+        expr: celery_queue_length{queue="workflows"} > 500
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "Workflow queue backlog > 500 tasks for 10m"
+          description: "Executions are being delayed. Check worker HPA/KEDA scaling and downstream integration latency."
+
+      - alert: DeadLetterQueueGrowing
+        expr: increase(autoflow_dlq_total[15m]) > 20
+        for: 0m
+        labels:
+          severity: warn
+        annotations:
+          summary: "More than 20 tasks landed in the DLQ in 15m"
+
+      - alert: NoWorkerPods
+        expr: kube_deployment_status_replicas_available{deployment="autoflow-worker"} < 1
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "No healthy worker pods — nothing is executing workflows"
+
+  - name: autoflow-infra
+    rules:
+      - alert: PostgresConnectionsNearLimit
+        expr: pg_stat_activity_count / pg_settings_max_connections > 0.85
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Postgres connections above 85% of max_connections"
+          description: "Check PgBouncer pool sizing and for connection leaks in long-running workflow nodes."
+
+      - alert: RedisMemoryNearLimit
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Redis memory above 90% — risk of evictions affecting Celery broker"
+
+      - alert: PgBouncerDown
+        expr: up{job="pgbouncer"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "PgBouncer target down"

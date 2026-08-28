@@ -1,0 +1,125 @@
+# PgBouncer — connection pooler in front of Postgres.
+#
+# Why: API pods (HPA up to N replicas) + worker pods each open up to
+# DATABASE_POOL_SIZE connections. Without a pooler, replica count is capped
+# by Postgres's max_connections (typically 100-500) long before you need
+# that many pods for CPU/throughput reasons. PgBouncer multiplexes many
+# app-side connections onto a small number of real Postgres connections.
+#
+# Mode: transaction pooling — safe for this codebase because SQLAlchemy's
+# async engine here doesn't rely on session-level features (LISTEN/NOTIFY,
+# advisory locks held across statements, prepared statements outside a
+# single transaction). If any of that gets added later, switch affected
+# call sites to a direct (non-pooled) connection.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pgbouncer-config
+  namespace: autoflow
+data:
+  pgbouncer.ini: |
+    [databases]
+    autoflow = host=postgres.autoflow.svc.cluster.local port=5432 dbname=autoflow
+
+    [pgbouncer]
+    listen_addr = 0.0.0.0
+    listen_port = 6432
+    auth_type = scram-sha-256
+    auth_file = /etc/pgbouncer/userlist.txt
+    pool_mode = transaction
+    max_client_conn = 2000
+    default_pool_size = 25
+    min_pool_size = 5
+    reserve_pool_size = 5
+    reserve_pool_timeout = 3
+    server_idle_timeout = 600
+    query_wait_timeout = 30
+    admin_users = pgbouncer_admin
+    ignore_startup_parameters = extra_float_digits
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer
+  namespace: autoflow
+  labels:
+    app: pgbouncer
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: pgbouncer
+  template:
+    metadata:
+      labels:
+        app: pgbouncer
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+      containers:
+        - name: pgbouncer
+          image: edoburu/pgbouncer:1.21.0
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 6432
+          envFrom:
+            - secretRef:
+                name: pgbouncer-secrets
+          volumeMounts:
+            - name: config
+              mountPath: /etc/pgbouncer/pgbouncer.ini
+              subPath: pgbouncer.ini
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          readinessProbe:
+            tcpSocket:
+              port: 6432
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 6432
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: pgbouncer-config
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgbouncer
+  namespace: autoflow
+spec:
+  selector:
+    app: pgbouncer
+  ports:
+    - port: 6432
+      targetPort: 6432
+---
+# Template only — real userlist (SCRAM hash of the Postgres role password)
+# and admin credentials should come from External Secrets / Vault in prod.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pgbouncer-secrets
+  namespace: autoflow
+type: Opaque
+stringData:
+  DB_USER: "autoflow"
+  DB_PASSWORD: "CHANGE_ME"

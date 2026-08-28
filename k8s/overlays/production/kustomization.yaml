@@ -1,0 +1,11 @@
+# Production overlay. Currently a pass-through to the base manifests —
+# exists so CI/CD and docs have a stable `k8s/overlays/production` path
+# to deploy against, even before there's a production-specific patch to
+# apply. Add patches here the same way overlays/staging does once
+# something needs to differ (e.g. a different replica floor, region-
+# specific node selectors for multi-region).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: autoflow
+resources:
+  - ../../

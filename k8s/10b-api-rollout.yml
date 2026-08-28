@@ -1,0 +1,128 @@
+# Argo Rollouts version of the API deployment — gives you real canary
+# releases (5% of traffic on the new version, watch metrics, promote or
+# auto-rollback) instead of a plain RollingUpdate that goes to 100% of
+# traffic as soon as pods report Ready.
+#
+# Requires the Argo Rollouts controller + kubectl plugin installed
+# in-cluster: https://argo-rollouts.readthedocs.io
+#
+# MIGRATION: this REPLACES the `kind: Deployment` block in k8s/10-api.yml
+# (same pod template, same name) — apply this instead of that block, not
+# in addition to it, and delete/scale the old Deployment to 0 once this
+# Rollout is running so they don't both try to own the same pods. The
+# Service and HPA in k8s/10-api.yml are unchanged and still apply — the
+# HPA's scaleTargetRef just needs its `kind` changed from Deployment to
+# Rollout.
+
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: autoflow-api
+  namespace: autoflow
+  labels:
+    app: autoflow-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: autoflow-api
+  template:
+    metadata:
+      labels:
+        app: autoflow-api
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: api
+          image: ghcr.io/manish08k/autoflow-api:latest
+          command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: autoflow-config
+            - secretRef:
+                name: autoflow-secrets
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  strategy:
+    canary:
+      canaryService: autoflow-api-canary
+      stableService: autoflow-api
+      trafficRouting:
+        nginx:
+          stableIngress: autoflow-ingress   # from k8s/30-ingress.yml
+      steps:
+        - setWeight: 5
+        - pause: { duration: 5m }           # bake time — let AutomatedAnalysis/alerts catch a bad deploy here
+        - analysis:
+            templates:
+              - templateName: success-rate
+        - setWeight: 25
+        - pause: { duration: 5m }
+        - setWeight: 50
+        - pause: { duration: 5m }
+        - setWeight: 100
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: autoflow-api-canary
+  namespace: autoflow
+spec:
+  selector:
+    app: autoflow-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+
+---
+# Automated rollback: if the 5xx rate on the canary weight is worse than
+# the stable rate, Argo Rollouts aborts and rolls back on its own — this
+# is what actually gives you "caught on 5% of traffic, not 100%".
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate
+  namespace: autoflow
+spec:
+  metrics:
+    - name: error-rate
+      interval: 1m
+      successCondition: result[0] < 0.02
+      failureLimit: 2
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring.svc.cluster.local:9090
+          query: |
+            sum(rate(http_requests_total{status=~"5..", service="autoflow-api-canary"}[2m]))
+              /
+            sum(rate(http_requests_total{service="autoflow-api-canary"}[2m]))

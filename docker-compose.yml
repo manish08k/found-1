@@ -1,0 +1,297 @@
+version: "3.9"
+
+services:
+  # ─── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: autoflow
+      POSTGRES_USER: autoflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-autoflow_secret}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U autoflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Redis ───────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_secret}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── One-shot migration container ────────────────────────────────────────────
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: alembic upgrade head
+    environment:
+      DATABASE_URL: postgresql+asyncpg://autoflow:${POSTGRES_PASSWORD:-autoflow_secret}@postgres:5432/autoflow
+      APP_SECRET_KEY: ${APP_SECRET_KEY}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # ─── API Server ───────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4 --loop uvloop
+    environment:
+      DATABASE_URL: postgresql+asyncpg://autoflow:${POSTGRES_PASSWORD:-autoflow_secret}@postgres:5432/autoflow
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379/2
+      APP_SECRET_KEY: ${APP_SECRET_KEY}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8000}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
+      # OAuth providers
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      SLACK_CLIENT_ID: ${SLACK_CLIENT_ID:-}
+      SLACK_CLIENT_SECRET: ${SLACK_CLIENT_SECRET:-}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      NOTION_CLIENT_ID: ${NOTION_CLIENT_ID:-}
+      NOTION_CLIENT_SECRET: ${NOTION_CLIENT_SECRET:-}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:-}
+      DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET:-}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      HUBSPOT_CLIENT_ID: ${HUBSPOT_CLIENT_ID:-}
+      HUBSPOT_CLIENT_SECRET: ${HUBSPOT_CLIENT_SECRET:-}
+      AIRTABLE_CLIENT_ID: ${AIRTABLE_CLIENT_ID:-}
+      AIRTABLE_CLIENT_SECRET: ${AIRTABLE_CLIENT_SECRET:-}
+      # Direct tokens
+      WHATSAPP_APP_ID: ${WHATSAPP_APP_ID:-}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-autoflow_whatsapp_verify}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      OTEL_ENABLED: ${OTEL_ENABLED:-true}
+      OTEL_EXPORTER_ENDPOINT: http://otel-collector:4318
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # ─── Celery Worker (workflow execution) ───────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: >
+      celery -A workers.tasks.celery_app worker
+      --loglevel=info
+      --queues=workflows,polling,maintenance
+      --concurrency=8
+    environment:
+      DATABASE_URL: postgresql+asyncpg://autoflow:${POSTGRES_PASSWORD:-autoflow_secret}@postgres:5432/autoflow
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379/2
+      APP_SECRET_KEY: ${APP_SECRET_KEY}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8000}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      SLACK_CLIENT_ID: ${SLACK_CLIENT_ID:-}
+      SLACK_CLIENT_SECRET: ${SLACK_CLIENT_SECRET:-}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      NOTION_CLIENT_ID: ${NOTION_CLIENT_ID:-}
+      NOTION_CLIENT_SECRET: ${NOTION_CLIENT_SECRET:-}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:-}
+      DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET:-}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      HUBSPOT_CLIENT_ID: ${HUBSPOT_CLIENT_ID:-}
+      HUBSPOT_CLIENT_SECRET: ${HUBSPOT_CLIENT_SECRET:-}
+      AIRTABLE_CLIENT_ID: ${AIRTABLE_CLIENT_ID:-}
+      AIRTABLE_CLIENT_SECRET: ${AIRTABLE_CLIENT_SECRET:-}
+      WHATSAPP_APP_ID: ${WHATSAPP_APP_ID:-}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-autoflow_whatsapp_verify}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      OTEL_ENABLED: ${OTEL_ENABLED:-true}
+      OTEL_EXPORTER_ENDPOINT: http://otel-collector:4318
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ─── Celery Beat (scheduler) ──────────────────────────────────────────────────
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: >
+      celery -A workers.tasks.celery_app beat
+      --loglevel=info
+      --scheduler celery.beat:PersistentScheduler
+    environment:
+      DATABASE_URL: postgresql+asyncpg://autoflow:${POSTGRES_PASSWORD:-autoflow_secret}@postgres:5432/autoflow
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379/2
+      APP_SECRET_KEY: ${APP_SECRET_KEY}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
+    depends_on:
+      - redis
+
+  # ─── Flower (Celery monitoring UI) ───────────────────────────────────────────
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: >
+      celery -A workers.tasks.celery_app flower
+      --port=5555
+      --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-admin}
+    environment:
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379/2
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+
+  # ─── Nginx reverse proxy ──────────────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - api
+
+  # ─── OpenTelemetry Collector ───────────────────────────────────────────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.98.0
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/otel-collector.yml:/etc/otel/config.yml
+    command: ["--config=/etc/otel/config.yml"]
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+
+  # ─── Prometheus ─────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./monitoring/alert-rules.yml:/etc/prometheus/alert-rules.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    environment:
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      PAGERDUTY_SERVICE_KEY: ${PAGERDUTY_SERVICE_KEY:-}
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+    ports:
+      - "9093:9093"
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: "postgresql://autoflow:${POSTGRES_PASSWORD:-autoflow}@postgres:5432/autoflow?sslmode=disable"
+    depends_on:
+      - postgres
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_secret}
+    depends_on:
+      - redis
+      - "--storage.tsdb.retention.time=30d"
+
+  # ─── Tempo (traces) ───────────────────────────────────────────────────────────
+  tempo:
+    image: grafana/tempo:2.4.1
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo.yml"]
+    volumes:
+      - ./monitoring/tempo.yml:/etc/tempo.yml
+      - tempo_data:/tmp/tempo
+
+  # ─── Grafana ────────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-autoflow}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+      - ./monitoring/dashboards:/etc/grafana/provisioning/dashboards
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+      - tempo
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+  tempo_data:

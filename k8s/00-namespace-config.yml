@@ -1,0 +1,40 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: autoflow
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: autoflow-config
+  namespace: autoflow
+data:
+  APP_ENV: "production"
+  APP_BASE_URL: "https://api.autoflow.io"
+  REDIS_URL: "redis://redis.autoflow.svc.cluster.local:6379/0"
+  CELERY_BROKER_URL: "redis://redis.autoflow.svc.cluster.local:6379/1"
+  CELERY_RESULT_BACKEND: "redis://redis.autoflow.svc.cluster.local:6379/2"
+  OTEL_ENABLED: "true"
+  OTEL_EXPORTER_ENDPOINT: "http://otel-collector.monitoring.svc.cluster.local:4318"
+  PROMETHEUS_ENABLED: "true"
+
+---
+# Template only — real values should come from sealed-secrets / external-secrets / CI in production.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: autoflow-secrets
+  namespace: autoflow
+type: Opaque
+stringData:
+  # Routed through PgBouncer (k8s/25-pgbouncer.yml), not directly at Postgres —
+  # this is what lets the API/worker HPAs scale without exhausting
+  # Postgres's max_connections. Point DATABASE_URL_REPLICA at a read
+  # replica once one exists; core/database.py falls back to DATABASE_URL
+  # for reads if it isn't set.
+  DATABASE_URL: "postgresql+asyncpg://autoflow:CHANGE_ME@pgbouncer.autoflow.svc.cluster.local:6432/autoflow"
+  DATABASE_URL_REPLICA: ""
+  APP_SECRET_KEY: "CHANGE_ME_32_CHARS_MINIMUM"
+  CREDENTIAL_ENCRYPTION_KEY: "CHANGE_ME_32_CHARS_MINIMUM"

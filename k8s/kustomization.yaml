@@ -1,0 +1,22 @@
+# Base kustomization — the plain manifests as they are today. Overlays
+# (overlays/staging, overlays/production) patch this for environment
+# differences instead of maintaining separate copies of every file.
+#
+# k8s/10b-api-rollout.yml (Argo Rollouts canary) is intentionally NOT
+# listed here — it's an alternative to 10-api.yml's Deployment, not an
+# addition. Swap it in once Argo Rollouts is installed (see that file's
+# header comment), don't apply both.
+resources:
+  - 00-namespace-config.yml
+  - 10-api.yml
+  - 20-worker-beat.yml
+  - 25-pgbouncer.yml
+  - 26-worker-autoscale.yml
+  - 27-network-policies.yml
+  - 29-backup-cronjob.yml
+  - 30-ingress.yml
+  # 28-external-secrets.yml is applied separately, after the External
+  # Secrets Operator CRDs exist in-cluster — kustomize would fail to
+  # build against a CRD it can't see, so keep it out of the base resource
+  # list and `kubectl apply -f k8s/28-external-secrets.yml` once ESO is
+  # installed.

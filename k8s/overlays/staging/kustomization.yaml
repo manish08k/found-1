@@ -1,0 +1,48 @@
+# Staging: same manifests as production, patched down in scale/cost and
+# pointed at staging hostnames/secrets. Mirroring prod topology (same
+# PgBouncer, same NetworkPolicies, same alert rules structure) is the
+# whole point — a staging env that looks nothing like prod doesn't catch
+# the failure modes that actually matter (connection pool exhaustion,
+# network policy misconfig, etc).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: autoflow-staging
+resources:
+  - ../../
+
+patches:
+  - target:
+      kind: Deployment
+      name: autoflow-api
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target:
+      kind: Deployment
+      name: autoflow-worker
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: autoflow-api-hpa
+    patch: |-
+      - op: replace
+        path: /spec/maxReplicas
+        value: 3
+  - target:
+      kind: Ingress
+      name: autoflow-ingress
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: staging-api.autoflow.io
+
+configMapGenerator:
+  - name: autoflow-config
+    behavior: merge
+    literals:
+      - APP_ENV=staging
+      - APP_BASE_URL=https://staging-api.autoflow.io

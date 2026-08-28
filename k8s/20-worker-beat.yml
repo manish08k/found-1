@@ -1,0 +1,109 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autoflow-worker
+  namespace: autoflow
+  labels:
+    app: autoflow-worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: autoflow-worker
+  template:
+    metadata:
+      labels:
+        app: autoflow-worker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: worker
+          image: ghcr.io/manish08k/autoflow-api:latest
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          command:
+            - celery
+            - -A
+            - workers.tasks.celery_app
+            - worker
+            - --loglevel=info
+            - --queues=workflows,polling,maintenance
+            - --concurrency=8
+          envFrom:
+            - configMapRef:
+                name: autoflow-config
+            - secretRef:
+                name: autoflow-secrets
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autoflow-beat
+  namespace: autoflow
+  labels:
+    app: autoflow-beat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: autoflow-beat
+  template:
+    metadata:
+      labels:
+        app: autoflow-beat
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: beat
+          image: ghcr.io/manish08k/autoflow-api:latest
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          command:
+            - celery
+            - -A
+            - workers.tasks.celery_app
+            - beat
+            - --loglevel=info
+          envFrom:
+            - configMapRef:
+                name: autoflow-config
+            - secretRef:
+                name: autoflow-secrets
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+      volumes:
+        - name: tmp
+          emptyDir: {}

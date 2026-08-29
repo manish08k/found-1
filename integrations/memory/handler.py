@@ -668,3 +668,325 @@ async def memory_zep_cloud(config: dict, input_data: dict, credential_id: str | 
             return {"deleted": r.status_code in (200, 204), "session_id": session_id}
 
     return {"error": f"Unknown operation: {operation}"}
+
+
+# ─── memory.buffer ────────────────────────────────────────────────────────────
+
+@register_node("memory.buffer")
+async def memory_buffer(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    BufferMemory: simple in-process unlimited conversation buffer.
+    Stores all messages for a session without any windowing or summarization.
+    Equivalent to Flowise's memory/BufferMemory/BufferMemory.ts.
+
+    config:
+      - operation: get | add | clear (default: get)
+      - session_id: session identifier (default: "default")
+      - role: message role for 'add' operation (user | assistant | system)
+      - content: message content for 'add' operation
+      - return_as_string: return messages as a formatted string (default: False)
+      - human_prefix: prefix for human messages (default: "Human")
+      - ai_prefix: prefix for AI messages (default: "AI")
+    """
+    operation = config.get("operation", "get").lower()
+    session_id = str(input_data.get("session_id") or config.get("session_id", "default"))
+    human_prefix = config.get("human_prefix", "Human")
+    ai_prefix = config.get("ai_prefix", "AI")
+    return_as_string = config.get("return_as_string", False)
+
+    if operation == "get":
+        msgs = list(_SESSIONS[session_id])
+        if return_as_string:
+            parts = []
+            for m in msgs:
+                role = m.get("role", "user")
+                content = m.get("content", "")
+                prefix = human_prefix if role == "user" else (ai_prefix if role == "assistant" else role.capitalize())
+                parts.append(f"{prefix}: {content}")
+            return {"messages": msgs, "history": "\n".join(parts), "session_id": session_id, "count": len(msgs)}
+        return {"messages": msgs, "session_id": session_id, "count": len(msgs)}
+
+    if operation == "add":
+        role = config.get("role", input_data.get("role", "user"))
+        content = input_data.get("content") or config.get("content", "")
+        _SESSIONS[session_id].append({"role": role, "content": content, "timestamp": time.time()})
+        return {"added": True, "session_id": session_id, "message_count": len(_SESSIONS[session_id])}
+
+    if operation == "clear":
+        count = len(_SESSIONS[session_id])
+        _SESSIONS[session_id].clear()
+        return {"cleared": count, "session_id": session_id}
+
+    return {"error": f"Unknown operation: {operation}"}
+
+
+# ─── memory.agent_mysql ───────────────────────────────────────────────────────
+
+@register_node("memory.agent_mysql")
+async def memory_agent_mysql(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    MySQL Agent Memory: stores LangGraph-style agent checkpoints in MySQL.
+    Equivalent to Flowise's memory/AgentMemory/MySQLAgentMemory.
+
+    config:
+      - host: MySQL host (default: localhost)
+      - port: MySQL port (default: 3306)
+      - database: database name
+      - username: MySQL user
+      - password: MySQL password (or from credential)
+      - operation: save | load | list | delete
+      - thread_id: conversation/agent thread identifier
+      - checkpoint: checkpoint data dict (for 'save')
+    """
+    from oauth.flow import get_credential_data
+
+    operation = config.get("operation", "load").lower()
+    thread_id = str(config.get("thread_id") or input_data.get("thread_id", "default"))
+    host = config.get("host", "localhost")
+    port = int(config.get("port", 3306))
+    database = config.get("database", "autoflow")
+    username = config.get("username", "root")
+    password = config.get("password", "")
+
+    if not password and credential_id:
+        try:
+            creds = await get_credential_data(credential_id, db)
+            password = creds.get("password", "")
+            username = creds.get("username", username)
+        except Exception:
+            pass
+
+    try:
+        import aiomysql  # type: ignore
+
+        conn = await aiomysql.connect(
+            host=host, port=port, db=database, user=username, password=password,
+        )
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            # Ensure table exists
+            await cur.execute("""
+                CREATE TABLE IF NOT EXISTS agent_checkpoints (
+                    thread_id VARCHAR(255) NOT NULL,
+                    checkpoint_id VARCHAR(255) NOT NULL,
+                    checkpoint JSON,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (thread_id, checkpoint_id)
+                )
+            """)
+            await conn.commit()
+
+            if operation == "save":
+                import uuid
+                checkpoint_id = str(uuid.uuid4())
+                checkpoint_data = config.get("checkpoint") or input_data.get("checkpoint", {})
+                await cur.execute(
+                    "INSERT INTO agent_checkpoints (thread_id, checkpoint_id, checkpoint) VALUES (%s, %s, %s)",
+                    (thread_id, checkpoint_id, json.dumps(checkpoint_data)),
+                )
+                await conn.commit()
+                return {"saved": True, "thread_id": thread_id, "checkpoint_id": checkpoint_id}
+
+            elif operation == "load":
+                await cur.execute(
+                    "SELECT checkpoint, checkpoint_id FROM agent_checkpoints WHERE thread_id=%s ORDER BY created_at DESC LIMIT 1",
+                    (thread_id,),
+                )
+                row = await cur.fetchone()
+                if row:
+                    checkpoint = json.loads(row["checkpoint"]) if isinstance(row["checkpoint"], str) else row["checkpoint"]
+                    return {"checkpoint": checkpoint, "thread_id": thread_id, "checkpoint_id": row["checkpoint_id"]}
+                return {"checkpoint": None, "thread_id": thread_id}
+
+            elif operation == "list":
+                await cur.execute(
+                    "SELECT checkpoint_id, created_at FROM agent_checkpoints WHERE thread_id=%s ORDER BY created_at DESC",
+                    (thread_id,),
+                )
+                rows = await cur.fetchall()
+                return {"checkpoints": list(rows), "thread_id": thread_id}
+
+            elif operation == "delete":
+                await cur.execute("DELETE FROM agent_checkpoints WHERE thread_id=%s", (thread_id,))
+                await conn.commit()
+                return {"deleted": True, "thread_id": thread_id}
+
+        conn.close()
+    except ImportError:
+        return {"error": "aiomysql not installed. Install with: pip install aiomysql"}
+
+    return {"error": f"Unknown operation: {operation}"}
+
+
+# ─── memory.agent_postgres ────────────────────────────────────────────────────
+
+@register_node("memory.agent_postgres")
+async def memory_agent_postgres(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Postgres Agent Memory: stores LangGraph-style agent checkpoints in PostgreSQL.
+    Equivalent to Flowise's memory/AgentMemory/PostgresAgentMemory.
+
+    config:
+      - dsn: full PostgreSQL DSN (or individual host/port/database/username/password)
+      - host: PG host (default: localhost)
+      - port: PG port (default: 5432)
+      - database: database name (default: autoflow)
+      - username: PG user (default: postgres)
+      - password: PG password (or from credential)
+      - operation: save | load | list | delete
+      - thread_id: conversation/agent thread identifier
+      - checkpoint: checkpoint data dict (for 'save')
+    """
+    from oauth.flow import get_credential_data
+    import json as _json
+    import uuid as _uuid
+
+    operation = config.get("operation", "load").lower()
+    thread_id = str(config.get("thread_id") or input_data.get("thread_id", "default"))
+
+    dsn = config.get("dsn", "")
+    if not dsn:
+        host = config.get("host", "localhost")
+        port = int(config.get("port", 5432))
+        database = config.get("database", "autoflow")
+        username = config.get("username", "postgres")
+        password = config.get("password", "")
+        if not password and credential_id:
+            try:
+                creds = await get_credential_data(credential_id, db)
+                password = creds.get("password", "")
+                username = creds.get("username", username)
+            except Exception:
+                pass
+        dsn = f"postgresql://{username}:{password}@{host}:{port}/{database}"
+
+    try:
+        import asyncpg  # type: ignore
+
+        conn = await asyncpg.connect(dsn)
+        try:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_checkpoints (
+                    thread_id TEXT NOT NULL,
+                    checkpoint_id TEXT NOT NULL,
+                    checkpoint JSONB,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    PRIMARY KEY (thread_id, checkpoint_id)
+                )
+            """)
+
+            if operation == "save":
+                checkpoint_id = str(_uuid.uuid4())
+                checkpoint_data = config.get("checkpoint") or input_data.get("checkpoint", {})
+                await conn.execute(
+                    "INSERT INTO agent_checkpoints(thread_id, checkpoint_id, checkpoint) VALUES($1,$2,$3)",
+                    thread_id, checkpoint_id, _json.dumps(checkpoint_data),
+                )
+                return {"saved": True, "thread_id": thread_id, "checkpoint_id": checkpoint_id}
+
+            elif operation == "load":
+                row = await conn.fetchrow(
+                    "SELECT checkpoint, checkpoint_id FROM agent_checkpoints WHERE thread_id=$1 ORDER BY created_at DESC LIMIT 1",
+                    thread_id,
+                )
+                if row:
+                    checkpoint = _json.loads(row["checkpoint"]) if isinstance(row["checkpoint"], str) else dict(row["checkpoint"])
+                    return {"checkpoint": checkpoint, "thread_id": thread_id, "checkpoint_id": row["checkpoint_id"]}
+                return {"checkpoint": None, "thread_id": thread_id}
+
+            elif operation == "list":
+                rows = await conn.fetch(
+                    "SELECT checkpoint_id, created_at::text FROM agent_checkpoints WHERE thread_id=$1 ORDER BY created_at DESC",
+                    thread_id,
+                )
+                return {"checkpoints": [dict(r) for r in rows], "thread_id": thread_id}
+
+            elif operation == "delete":
+                await conn.execute("DELETE FROM agent_checkpoints WHERE thread_id=$1", thread_id)
+                return {"deleted": True, "thread_id": thread_id}
+        finally:
+            await conn.close()
+    except ImportError:
+        return {"error": "asyncpg not installed. Install with: pip install asyncpg"}
+
+    return {"error": f"Unknown operation: {operation}"}
+
+
+# ─── memory.agent_sqlite ──────────────────────────────────────────────────────
+
+@register_node("memory.agent_sqlite")
+async def memory_agent_sqlite(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    SQLite Agent Memory: stores LangGraph-style agent checkpoints in SQLite.
+    Equivalent to Flowise's memory/AgentMemory/SQLiteAgentMemory.
+
+    config:
+      - db_path: path to the SQLite database file (default: ./agent_memory.db)
+      - operation: save | load | list | delete
+      - thread_id: conversation/agent thread identifier
+      - checkpoint: checkpoint data dict (for 'save')
+    """
+    import sqlite3
+    import uuid as _uuid
+    import json as _json
+    import threading
+
+    operation = config.get("operation", "load").lower()
+    thread_id = str(config.get("thread_id") or input_data.get("thread_id", "default"))
+    db_path = config.get("db_path", "./agent_memory.db")
+
+    def _run_sync():
+        _conn = sqlite3.connect(db_path, check_same_thread=False)
+        _conn.row_factory = sqlite3.Row
+        try:
+            _conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_checkpoints (
+                    thread_id TEXT NOT NULL,
+                    checkpoint_id TEXT NOT NULL,
+                    checkpoint TEXT,
+                    created_at TEXT DEFAULT (datetime('now')),
+                    PRIMARY KEY (thread_id, checkpoint_id)
+                )
+            """)
+            _conn.commit()
+
+            if operation == "save":
+                checkpoint_id = str(_uuid.uuid4())
+                checkpoint_data = config.get("checkpoint") or input_data.get("checkpoint", {})
+                _conn.execute(
+                    "INSERT OR REPLACE INTO agent_checkpoints(thread_id, checkpoint_id, checkpoint) VALUES(?,?,?)",
+                    (thread_id, checkpoint_id, _json.dumps(checkpoint_data)),
+                )
+                _conn.commit()
+                return {"saved": True, "thread_id": thread_id, "checkpoint_id": checkpoint_id}
+
+            elif operation == "load":
+                cur = _conn.execute(
+                    "SELECT checkpoint, checkpoint_id FROM agent_checkpoints WHERE thread_id=? ORDER BY created_at DESC LIMIT 1",
+                    (thread_id,),
+                )
+                row = cur.fetchone()
+                if row:
+                    checkpoint = _json.loads(row["checkpoint"]) if row["checkpoint"] else {}
+                    return {"checkpoint": checkpoint, "thread_id": thread_id, "checkpoint_id": row["checkpoint_id"]}
+                return {"checkpoint": None, "thread_id": thread_id}
+
+            elif operation == "list":
+                cur = _conn.execute(
+                    "SELECT checkpoint_id, created_at FROM agent_checkpoints WHERE thread_id=? ORDER BY created_at DESC",
+                    (thread_id,),
+                )
+                rows = [dict(r) for r in cur.fetchall()]
+                return {"checkpoints": rows, "thread_id": thread_id}
+
+            elif operation == "delete":
+                _conn.execute("DELETE FROM agent_checkpoints WHERE thread_id=?", (thread_id,))
+                _conn.commit()
+                return {"deleted": True, "thread_id": thread_id}
+
+            return {"error": f"Unknown operation: {operation}"}
+        finally:
+            _conn.close()
+
+    import asyncio
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _run_sync)

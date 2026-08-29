@@ -356,3 +356,460 @@ async def agentflow_tool(config: dict, input_data: dict, credential_id: str | No
         output_key: result,
         "tool_used": tool_node_id,
     }
+
+
+# ─── Start ────────────────────────────────────────────────────────────────────
+
+@register_node("agentflow.start")
+async def agentflow_start(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Start node: entry point of an agentflow. Passes through input data,
+    optionally merging any static config values. Equivalent to Flowise's
+    agentflow/Start/Start.ts.
+
+    config:
+      - default_inputs: dict of default key/value pairs merged with input_data
+      - input_schema: (informational) JSON schema describing expected inputs
+    """
+    defaults = config.get("default_inputs") or {}
+    output = {**defaults, **input_data}
+    output["_flow_started"] = True
+    return output
+
+
+# ─── Agent ────────────────────────────────────────────────────────────────────
+
+@register_node("agentflow.agent")
+async def agentflow_agent(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Agent node within an agentflow: runs an LLM-backed agent with optional
+    tool use. Equivalent to Flowise's agentflow/Agent/Agent.ts.
+
+    config:
+      - provider: openai | anthropic (default: openai)
+      - model: LLM model name
+      - system_prompt: agent system instructions (supports {{ }} templates)
+      - tools: list of tool node IDs available to the agent
+      - max_iterations: max tool-call loops (default: 5)
+      - input: user message (supports {{ }} templates)
+    """
+    provider = config.get("provider", "openai")
+    model = config.get("model", "")
+    system_prompt = _render(config.get("system_prompt", "You are a helpful assistant."), input_data)
+    tool_ids = config.get("tools") or []
+    max_iter = min(int(config.get("max_iterations", 5)), 10)
+    user_input = _render(config.get("input") or config.get("prompt", ""), input_data) or json.dumps(input_data)
+
+    # Build tool call loop
+    messages = [{"role": "user", "content": user_input}]
+    all_tool_results = []
+
+    for _ in range(max_iter):
+        response = await _call_llm(provider, model, system_prompt, "\n".join(
+            f"{m['role'].upper()}: {m['content']}" for m in messages
+        ), max_tokens=2048)
+
+        # Check for tool invocation pattern: Tool: <id>\nInput: <json>
+        tool_match = re.search(r"Tool:\s*(\S+)\s*\nInput:\s*(\{.*?\})", response, re.DOTALL)
+        if tool_match and tool_match.group(1) in NODE_HANDLERS:
+            tool_id = tool_match.group(1)
+            try:
+                tool_args = json.loads(tool_match.group(2))
+            except json.JSONDecodeError:
+                tool_args = {}
+            tool_result = await NODE_HANDLERS[tool_id](tool_args, tool_args, credential_id, db)
+            observation = json.dumps(tool_result) if isinstance(tool_result, dict) else str(tool_result)
+            messages.append({"role": "assistant", "content": response})
+            messages.append({"role": "user", "content": f"Observation: {observation}"})
+            all_tool_results.append({"tool": tool_id, "result": tool_result})
+        else:
+            # Final answer
+            return {
+                **input_data,
+                "agent_response": response,
+                "tool_calls": all_tool_results,
+                "messages": messages,
+            }
+
+    return {**input_data, "agent_response": response, "tool_calls": all_tool_results, "messages": messages}
+
+
+# ─── Condition ────────────────────────────────────────────────────────────────
+
+@register_node("agentflow.condition")
+async def agentflow_condition(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Rule-based condition node (no LLM): evaluates a simple expression against
+    input_data and routes to 'true' or 'false' branch.
+    Equivalent to Flowise's agentflow/Condition/Condition.ts.
+
+    config:
+      - field: the input_data field to test
+      - operator: equals | not_equals | contains | not_contains | gt | lt |
+                  gte | lte | is_empty | is_not_empty | exists
+      - value: the value to compare against (supports {{ }} templates)
+      - case_sensitive: bool (default True)
+    """
+    field = config.get("field", "")
+    operator = config.get("operator", "equals")
+    expected = _render(str(config.get("value", "")), input_data)
+    case_sensitive = config.get("case_sensitive", True)
+
+    actual = input_data.get(field)
+    actual_str = str(actual) if actual is not None else ""
+    if not case_sensitive:
+        actual_str = actual_str.lower()
+        expected = expected.lower()
+
+    result = False
+    if operator == "equals":
+        result = actual_str == expected
+    elif operator == "not_equals":
+        result = actual_str != expected
+    elif operator == "contains":
+        result = expected in actual_str
+    elif operator == "not_contains":
+        result = expected not in actual_str
+    elif operator == "gt":
+        try:
+            result = float(actual_str) > float(expected)
+        except (ValueError, TypeError):
+            result = False
+    elif operator == "lt":
+        try:
+            result = float(actual_str) < float(expected)
+        except (ValueError, TypeError):
+            result = False
+    elif operator == "gte":
+        try:
+            result = float(actual_str) >= float(expected)
+        except (ValueError, TypeError):
+            result = False
+    elif operator == "lte":
+        try:
+            result = float(actual_str) <= float(expected)
+        except (ValueError, TypeError):
+            result = False
+    elif operator == "is_empty":
+        result = not actual_str
+    elif operator == "is_not_empty":
+        result = bool(actual_str)
+    elif operator == "exists":
+        result = field in input_data and input_data[field] is not None
+
+    branch = "true" if result else "false"
+    return {
+        **input_data,
+        "condition_result": result,
+        "branch": branch,
+        "evaluated_field": field,
+        "operator": operator,
+    }
+
+
+# ─── CustomFunction ───────────────────────────────────────────────────────────
+
+@register_node("agentflow.custom_function")
+async def agentflow_custom_function(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    CustomFunction node: executes a user-defined Python function within a
+    restricted sandbox. Equivalent to Flowise's agentflow/CustomFunction/CustomFunction.ts.
+
+    config:
+      - code: Python source code. Must define a function named 'run(input_data: dict) -> dict'
+      - timeout: max execution time in seconds (default: 10)
+    """
+    code = config.get("code", "")
+    timeout = int(config.get("timeout", 10))
+
+    if not code:
+        return {**input_data, "custom_function_result": None, "error": "No code provided"}
+
+    # Ensure the code defines a 'run' function
+    if "def run(" not in code and "async def run(" not in code:
+        return {**input_data, "custom_function_result": None,
+                "error": "Code must define a function named 'run(input_data: dict) -> dict'"}
+
+    # Restricted execution environment
+    safe_globals = {
+        "__builtins__": {
+            "len": len, "str": str, "int": int, "float": float, "bool": bool,
+            "list": list, "dict": dict, "tuple": tuple, "set": set,
+            "range": range, "enumerate": enumerate, "zip": zip, "map": map,
+            "filter": filter, "sorted": sorted, "reversed": reversed,
+            "sum": sum, "min": min, "max": max, "abs": abs, "round": round,
+            "isinstance": isinstance, "type": type, "print": print,
+            "json": __import__("json"), "re": __import__("re"),
+        }
+    }
+
+    local_ns: dict = {}
+    exec(compile(code, "<agentflow_custom_function>", "exec"), safe_globals, local_ns)
+
+    run_fn = local_ns.get("run")
+    if not callable(run_fn):
+        return {**input_data, "custom_function_result": None, "error": "'run' is not callable"}
+
+    try:
+        result = await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(None, run_fn, dict(input_data)),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        return {**input_data, "custom_function_result": None, "error": f"Execution timed out after {timeout}s"}
+
+    if isinstance(result, dict):
+        return {**input_data, **result, "custom_function_result": result}
+    return {**input_data, "custom_function_result": result}
+
+
+# ─── HTTP ─────────────────────────────────────────────────────────────────────
+
+@register_node("agentflow.http")
+async def agentflow_http(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    HTTP node: makes an HTTP request within an agentflow.
+    Equivalent to Flowise's agentflow/HTTP/HTTP.ts.
+
+    config:
+      - url: target URL (supports {{ }} templates)
+      - method: GET | POST | PUT | PATCH | DELETE (default: GET)
+      - headers: dict of request headers
+      - body: request body (dict for JSON, string for raw)
+      - params: query parameters dict
+      - timeout: seconds (default: 30)
+      - response_format: json | text | auto (default: auto)
+    """
+    url = _render(config.get("url", ""), input_data)
+    if not url:
+        raise ValueError("agentflow.http requires 'url'")
+
+    method = config.get("method", "GET").upper()
+    headers = config.get("headers") or {}
+    body = config.get("body")
+    params = config.get("params") or {}
+    timeout = float(config.get("timeout", 30))
+    response_format = config.get("response_format", "auto")
+
+    # Render template values in headers and params
+    headers = {k: _render(str(v), input_data) for k, v in headers.items()}
+    params = {k: _render(str(v), input_data) for k, v in params.items()}
+
+    if isinstance(body, str):
+        body = _render(body, input_data)
+
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        if method in ("GET", "DELETE"):
+            r = await client.request(method, url, headers=headers, params=params)
+        else:
+            if isinstance(body, dict):
+                r = await client.request(method, url, headers=headers, params=params, json=body)
+            else:
+                r = await client.request(method, url, headers=headers, params=params, content=body)
+
+    status = r.status_code
+    content_type = r.headers.get("content-type", "")
+
+    if response_format == "json" or (response_format == "auto" and "application/json" in content_type):
+        try:
+            response_body = r.json()
+        except Exception:
+            response_body = r.text
+    else:
+        response_body = r.text
+
+    return {
+        **input_data,
+        "status_code": status,
+        "response": response_body,
+        "headers": dict(r.headers),
+        "url": url,
+        "method": method,
+    }
+
+
+# ─── HumanInput ───────────────────────────────────────────────────────────────
+
+@register_node("agentflow.human_input")
+async def agentflow_human_input(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    HumanInput node: pauses the flow and waits for human input.
+    Equivalent to Flowise's agentflow/HumanInput/HumanInput.ts.
+
+    In production, this creates a pending approval record and raises a
+    HumanInputRequired exception. The orchestrator captures this and
+    resumes the flow when input is provided via the approval API.
+
+    config:
+      - prompt: message shown to the human operator (supports {{ }} templates)
+      - input_key: key under which the human's reply will be stored (default: "human_input")
+      - timeout: max wait seconds (default: 3600)
+    """
+    prompt_msg = _render(config.get("prompt", "Please provide input to continue."), input_data)
+    input_key = config.get("input_key", "human_input")
+    timeout = int(config.get("timeout", 3600))
+
+    # Check if human input has already been provided (flow resumed)
+    if input_key in input_data:
+        return {**input_data, "human_input_received": True, "human_input_prompt": prompt_msg}
+
+    # Try to create an approval record via the approval node
+    if "approval.wait" in NODE_HANDLERS:
+        approval_result = await NODE_HANDLERS["approval.wait"](
+            {"prompt": prompt_msg, "timeout": timeout, "input_key": input_key},
+            input_data, credential_id, db,
+        )
+        return {**input_data, **approval_result, "human_input_received": False, "human_input_prompt": prompt_msg}
+
+    # Fallback: return a signal that human input is required
+    return {
+        **input_data,
+        "human_input_required": True,
+        "human_input_prompt": prompt_msg,
+        "human_input_key": input_key,
+        "human_input_received": False,
+    }
+
+
+# ─── Iteration ────────────────────────────────────────────────────────────────
+
+@register_node("agentflow.iteration")
+async def agentflow_iteration(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Iteration node: iterates over a list in input_data, dispatching a sub-node
+    for each item. Equivalent to Flowise's agentflow/Iteration/Iteration.ts.
+
+    config:
+      - items_key: key in input_data containing the list to iterate (default: "items")
+      - item_key: key used to pass each item to the sub-node (default: "item")
+      - sub_node_id: node ID to call for each item
+      - sub_config: config passed to the sub-node
+      - output_key: key for collecting results (default: "iteration_results")
+    """
+    items_key = config.get("items_key", "items")
+    item_key = config.get("item_key", "item")
+    sub_node_id = config.get("sub_node_id")
+    sub_config = config.get("sub_config") or {}
+    output_key = config.get("output_key", "iteration_results")
+
+    items = input_data.get(items_key, [])
+    if not isinstance(items, list):
+        items = [items]
+
+    results = []
+    for i, item in enumerate(items):
+        item_input = {**input_data, item_key: item, "_iteration_index": i}
+
+        if sub_node_id and sub_node_id in NODE_HANDLERS:
+            try:
+                sub_result = await NODE_HANDLERS[sub_node_id](sub_config, item_input, credential_id, db)
+                results.append(sub_result)
+            except Exception as e:
+                results.append({"error": str(e), "item": item, "index": i})
+        else:
+            # No sub-node: just collect items
+            results.append(item_input)
+
+    return {
+        **input_data,
+        output_key: results,
+        "_iteration_count": len(items),
+        "_iteration_completed": True,
+    }
+
+
+# ─── LLM ──────────────────────────────────────────────────────────────────────
+
+@register_node("agentflow.llm")
+async def agentflow_llm(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    LLM node: direct LLM call within an agentflow. Equivalent to
+    Flowise's agentflow/LLM/LLM.ts.
+
+    config:
+      - provider: openai | anthropic (default: openai)
+      - model: LLM model name
+      - system_prompt: system instructions (supports {{ }} templates)
+      - prompt: user message (supports {{ }} templates)
+      - max_tokens: max tokens in response (default: 1024)
+      - temperature: sampling temperature (default: 0.7)
+      - output_key: key to store LLM output (default: "llm_output")
+    """
+    provider = config.get("provider", "openai")
+    model = config.get("model", "")
+    system_prompt = _render(config.get("system_prompt", ""), input_data)
+    prompt = _render(config.get("prompt", ""), input_data) or json.dumps(input_data)
+    max_tokens = int(config.get("max_tokens", 1024))
+    output_key = config.get("output_key", "llm_output")
+
+    response = await _call_llm(provider, model, system_prompt, prompt, max_tokens)
+
+    return {
+        **input_data,
+        output_key: response,
+        "llm_provider": provider,
+        "llm_model": model,
+    }
+
+
+# ─── Loop ─────────────────────────────────────────────────────────────────────
+
+@register_node("agentflow.loop")
+async def agentflow_loop(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Loop node: repeats a sub-node until a condition is met or max iterations
+    reached. Equivalent to Flowise's agentflow/Loop/Loop.ts.
+
+    config:
+      - sub_node_id: node ID to execute each iteration
+      - sub_config: config for the sub-node
+      - condition_field: field in sub-node output to check for loop exit
+      - condition_value: value that, when matched, exits the loop
+      - max_iterations: max loop iterations (default: 10)
+      - output_key: key for collecting iteration outputs (default: "loop_results")
+    """
+    sub_node_id = config.get("sub_node_id")
+    sub_config = config.get("sub_config") or {}
+    condition_field = config.get("condition_field", "done")
+    condition_value = config.get("condition_value", True)
+    max_iter = int(config.get("max_iterations", 10))
+    output_key = config.get("output_key", "loop_results")
+
+    if not sub_node_id or sub_node_id not in NODE_HANDLERS:
+        return {**input_data, output_key: [], "error": f"Sub-node '{sub_node_id}' not found"}
+
+    current_data = dict(input_data)
+    results = []
+    for i in range(max_iter):
+        result = await NODE_HANDLERS[sub_node_id](sub_config, current_data, credential_id, db)
+        results.append(result)
+        current_data = {**current_data, **result, "_loop_iteration": i + 1}
+
+        # Check exit condition
+        actual = result.get(condition_field)
+        if actual == condition_value or str(actual) == str(condition_value):
+            break
+
+    return {
+        **current_data,
+        output_key: results,
+        "_loop_iterations_run": len(results),
+        "_loop_completed": True,
+    }
+
+
+# ─── StickyNote ───────────────────────────────────────────────────────────────
+
+@register_node("agentflow.sticky_note")
+async def agentflow_sticky_note(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    StickyNote node: a visual annotation node with no execution effect.
+    Passes input data through unchanged. Equivalent to Flowise's
+    agentflow/StickyNote/StickyNote.ts.
+
+    config:
+      - text: the note text content
+      - color: background color (informational)
+    """
+    # Pure pass-through — sticky notes are UI-only
+    return {**input_data, "_sticky_note": config.get("text", "")}

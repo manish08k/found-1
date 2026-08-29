@@ -1710,3 +1710,455 @@ async def loader_vectorstore_to_doc(config: dict, input_data: dict, credential_i
         meta["source"] = f"vectorstore.{vs_type}/{collection}"
         documents.append({"text": text, "metadata": meta})
     return {"documents": documents, "total": len(documents), "query": query, "collection": collection}
+
+
+# ─── PlainText ────────────────────────────────────────────────────────────────
+
+@register_node("loader.plain_text")
+async def loader_plain_text(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """
+    PlainText loader: loads a plain-text string as a document.
+    Equivalent to Flowise's documentloaders/PlainText/PlainText.ts.
+
+    config:
+      - text: the plain text content
+      - metadata: optional metadata dict
+      - chunk_size: chunk size (0 = no chunking, default: 0)
+      - chunk_overlap: overlap between chunks (default: 200)
+    """
+    text = config.get("text") or input_data.get("text", "")
+    metadata = config.get("metadata") or {}
+    chunk_size = int(config.get("chunk_size", 0))
+
+    if chunk_size > 0:
+        chunks = _chunk_text(text, chunk_size, int(config.get("chunk_overlap", 200)))
+        docs = [{"text": c, "metadata": {**metadata, "chunk_index": i, "source": "plain_text"}} for i, c in enumerate(chunks)]
+    else:
+        docs = [{"text": text, "metadata": {**metadata, "source": "plain_text"}}]
+
+    return {"documents": docs, "count": len(docs), "source": "plain_text"}
+
+
+# ─── Airtable Document Loader ─────────────────────────────────────────────────
+
+@register_node("loader.airtable")
+async def loader_airtable(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """
+    Airtable document loader: loads records from an Airtable base/table as
+    documents for RAG pipelines. Equivalent to Flowise's
+    documentloaders/Airtable/Airtable.ts.
+
+    config:
+      - base_id: Airtable base ID (e.g. appXXXXXXXX)
+      - table_name: table name or ID
+      - api_key: Airtable Personal Access Token (or from credential)
+      - text_fields: list of field names to concatenate into document text
+      - metadata_fields: list of field names to include as metadata
+      - filter_formula: Airtable filter formula (optional)
+      - max_records: max records to load (default: 100)
+    """
+    from oauth.flow import get_credential_data
+
+    base_id = config.get("base_id") or input_data.get("base_id")
+    table_name = config.get("table_name") or input_data.get("table_name")
+    if not base_id or not table_name:
+        raise ValueError("loader.airtable requires 'base_id' and 'table_name'")
+
+    # Get API key
+    api_key = config.get("api_key")
+    if not api_key and credential_id:
+        try:
+            creds = await get_credential_data(credential_id, db)
+            api_key = creds.get("api_key") or creds.get("token")
+        except Exception:
+            pass
+    if not api_key:
+        api_key = getattr(settings, "AIRTABLE_API_KEY", None)
+    if not api_key:
+        raise ValueError("loader.airtable requires an Airtable API key")
+
+    text_fields = config.get("text_fields") or []
+    metadata_fields = config.get("metadata_fields") or []
+    filter_formula = config.get("filter_formula", "")
+    max_records = int(config.get("max_records", 100))
+
+    params: dict = {"maxRecords": max_records, "pageSize": min(max_records, 100)}
+    if filter_formula:
+        params["filterByFormula"] = filter_formula
+
+    url = f"https://api.airtable.com/v0/{base_id}/{table_name}"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    all_records = []
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        while True:
+            r = await client.get(url, headers=headers, params=params)
+            r.raise_for_status()
+            data = r.json()
+            all_records.extend(data.get("records", []))
+            offset = data.get("offset")
+            if not offset or len(all_records) >= max_records:
+                break
+            params["offset"] = offset
+
+    documents = []
+    for record in all_records[:max_records]:
+        fields = record.get("fields", {})
+        record_id = record.get("id", "")
+
+        if text_fields:
+            text_parts = [str(fields.get(f, "")) for f in text_fields if fields.get(f)]
+            text = " | ".join(text_parts)
+        else:
+            text = " | ".join(f"{k}: {v}" for k, v in fields.items() if not isinstance(v, (dict, list)))
+
+        meta = {"record_id": record_id, "base_id": base_id, "table_name": table_name, "source": "airtable"}
+        for mf in metadata_fields:
+            if mf in fields:
+                meta[mf] = fields[mf]
+
+        if text.strip():
+            documents.append({"text": text, "metadata": meta})
+
+    return {"documents": documents, "count": len(documents), "source": "airtable", "table": table_name}
+
+
+# ─── Confluence Document Loader ───────────────────────────────────────────────
+
+@register_node("loader.confluence")
+async def loader_confluence(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """
+    Confluence document loader: loads pages from a Confluence space as
+    documents for RAG pipelines. Equivalent to Flowise's
+    documentloaders/Confluence/Confluence.ts.
+
+    config:
+      - base_url: Confluence instance URL (e.g. https://myorg.atlassian.net)
+      - username: Atlassian account email
+      - api_token: Confluence API token (or from credential)
+      - space_key: Confluence space key (e.g. PROJ)
+      - page_ids: optional list of specific page IDs to load
+      - limit: max pages to load (default: 50)
+      - include_attachments: bool (default: False)
+    """
+    from oauth.flow import get_credential_data
+    import html
+
+    base_url = config.get("base_url", "").rstrip("/")
+    space_key = config.get("space_key") or input_data.get("space_key")
+    page_ids = config.get("page_ids") or input_data.get("page_ids") or []
+    limit = int(config.get("limit", 50))
+
+    username = config.get("username")
+    api_token = config.get("api_token")
+    if (not username or not api_token) and credential_id:
+        try:
+            creds = await get_credential_data(credential_id, db)
+            username = username or creds.get("username") or creds.get("email")
+            api_token = api_token or creds.get("api_token") or creds.get("password")
+        except Exception:
+            pass
+
+    if not base_url:
+        raise ValueError("loader.confluence requires 'base_url'")
+    if not username or not api_token:
+        raise ValueError("loader.confluence requires 'username' and 'api_token'")
+
+    import base64
+    auth = base64.b64encode(f"{username}:{api_token}".encode()).decode()
+    headers = {"Authorization": f"Basic {auth}", "Accept": "application/json"}
+
+    async def strip_html(text: str) -> str:
+        """Strip HTML tags from Confluence content."""
+        clean = re.sub(r"<[^>]+>", " ", text)
+        clean = html.unescape(clean)
+        return re.sub(r"\s+", " ", clean).strip()
+
+    pages = []
+    async with httpx.AsyncClient(timeout=30) as client:
+        if page_ids:
+            for pid in page_ids[:limit]:
+                r = await client.get(
+                    f"{base_url}/rest/api/content/{pid}",
+                    headers=headers,
+                    params={"expand": "body.storage,space,version"},
+                )
+                if r.is_success:
+                    pages.append(r.json())
+        elif space_key:
+            start = 0
+            while len(pages) < limit:
+                r = await client.get(
+                    f"{base_url}/rest/api/content",
+                    headers=headers,
+                    params={
+                        "type": "page",
+                        "spaceKey": space_key,
+                        "expand": "body.storage,space,version",
+                        "limit": min(25, limit - len(pages)),
+                        "start": start,
+                    },
+                )
+                r.raise_for_status()
+                data = r.json()
+                results = data.get("results", [])
+                if not results:
+                    break
+                pages.extend(results)
+                if data.get("_links", {}).get("next"):
+                    start += len(results)
+                else:
+                    break
+
+    documents = []
+    for page in pages:
+        page_id = page.get("id", "")
+        title = page.get("title", "")
+        body_html = page.get("body", {}).get("storage", {}).get("value", "")
+        text = await strip_html(body_html)
+        if not text.strip():
+            text = title
+
+        meta = {
+            "page_id": page_id,
+            "title": title,
+            "space_key": space_key or page.get("space", {}).get("key", ""),
+            "source": "confluence",
+            "url": f"{base_url}/pages/{page_id}",
+            "version": page.get("version", {}).get("number", 1),
+        }
+        documents.append({"text": f"{title}\n\n{text}", "metadata": meta})
+
+    return {"documents": documents, "count": len(documents), "source": "confluence", "space_key": space_key}
+
+
+# ─── Notion DB Document Loader ────────────────────────────────────────────────
+
+@register_node("loader.notion_db")
+async def loader_notion_db(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """
+    Notion Database loader: loads all pages within a Notion database as
+    documents for RAG pipelines. Equivalent to Flowise's
+    documentloaders/Notion/NotionDB.ts.
+
+    config:
+      - database_id: Notion database UUID
+      - token: Notion integration token (or from credential)
+      - text_properties: list of property names to use as document text
+      - metadata_properties: list of property names to include as metadata
+      - filter: Notion filter object (optional)
+      - max_pages: max pages to load (default: 100)
+    """
+    from oauth.flow import get_credential_data
+
+    database_id = config.get("database_id") or input_data.get("database_id")
+    if not database_id:
+        raise ValueError("loader.notion_db requires 'database_id'")
+
+    token = config.get("token")
+    if not token and credential_id:
+        try:
+            creds = await get_credential_data(credential_id, db)
+            token = creds.get("token") or creds.get("api_key")
+        except Exception:
+            pass
+    if not token:
+        token = getattr(settings, "NOTION_TOKEN", None)
+    if not token:
+        raise ValueError("loader.notion_db requires a Notion integration token")
+
+    text_props = config.get("text_properties") or []
+    metadata_props = config.get("metadata_properties") or []
+    max_pages = int(config.get("max_pages", 100))
+    notion_filter = config.get("filter")
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+    }
+
+    all_pages = []
+    has_more = True
+    start_cursor = None
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        while has_more and len(all_pages) < max_pages:
+            body: dict = {"page_size": min(100, max_pages - len(all_pages))}
+            if notion_filter:
+                body["filter"] = notion_filter
+            if start_cursor:
+                body["start_cursor"] = start_cursor
+
+            r = await client.post(
+                f"https://api.notion.com/v1/databases/{database_id}/query",
+                headers=headers,
+                json=body,
+            )
+            r.raise_for_status()
+            data = r.json()
+            all_pages.extend(data.get("results", []))
+            has_more = data.get("has_more", False)
+            start_cursor = data.get("next_cursor")
+
+    def _extract_property_text(prop: dict) -> str:
+        ptype = prop.get("type", "")
+        val = prop.get(ptype, "")
+        if ptype in ("title", "rich_text"):
+            return "".join(t.get("plain_text", "") for t in (val or []))
+        if ptype == "select":
+            return (val or {}).get("name", "")
+        if ptype == "multi_select":
+            return ", ".join(o.get("name", "") for o in (val or []))
+        if ptype in ("number", "url", "email", "phone_number"):
+            return str(val) if val is not None else ""
+        if ptype == "checkbox":
+            return "true" if val else "false"
+        if ptype in ("date",):
+            start = (val or {}).get("start", "")
+            return start or ""
+        return ""
+
+    documents = []
+    for page in all_pages:
+        props = page.get("properties", {})
+        page_id = page.get("id", "")
+
+        if text_props:
+            parts = [_extract_property_text(props[p]) for p in text_props if p in props]
+            text = " | ".join(filter(None, parts))
+        else:
+            parts = [f"{k}: {_extract_property_text(v)}" for k, v in props.items()]
+            text = " | ".join(filter(lambda x: not x.endswith(": "), parts))
+
+        meta = {"page_id": page_id, "database_id": database_id, "source": "notion_db",
+                 "url": page.get("url", "")}
+        for mp in metadata_props:
+            if mp in props:
+                meta[mp] = _extract_property_text(props[mp])
+
+        if text.strip():
+            documents.append({"text": text, "metadata": meta})
+
+    return {"documents": documents, "count": len(documents), "source": "notion_db", "database_id": database_id}
+
+
+# ─── Notion Folder Document Loader ────────────────────────────────────────────
+
+@register_node("loader.notion_folder")
+async def loader_notion_folder(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """
+    Notion Folder loader: loads all pages within a Notion parent page
+    (treating it as a 'folder') as documents for RAG pipelines.
+    Equivalent to Flowise's documentloaders/Notion/NotionFolder.ts.
+
+    config:
+      - page_id: parent Notion page ID (the 'folder')
+      - token: Notion integration token (or from credential)
+      - recursive: load nested pages recursively (default: True)
+      - max_depth: max recursion depth (default: 3)
+      - max_pages: max total pages (default: 50)
+    """
+    from oauth.flow import get_credential_data
+
+    page_id = config.get("page_id") or input_data.get("page_id")
+    if not page_id:
+        raise ValueError("loader.notion_folder requires 'page_id'")
+
+    token = config.get("token")
+    if not token and credential_id:
+        try:
+            creds = await get_credential_data(credential_id, db)
+            token = creds.get("token") or creds.get("api_key")
+        except Exception:
+            pass
+    if not token:
+        token = getattr(settings, "NOTION_TOKEN", None)
+    if not token:
+        raise ValueError("loader.notion_folder requires a Notion integration token")
+
+    recursive = config.get("recursive", True)
+    max_depth = int(config.get("max_depth", 3))
+    max_pages = int(config.get("max_pages", 50))
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Notion-Version": "2022-06-28",
+    }
+
+    collected_pages = []
+
+    async def fetch_page_content(pid: str, depth: int = 0) -> None:
+        if len(collected_pages) >= max_pages or depth > max_depth:
+            return
+
+        # Get page metadata
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.get(f"https://api.notion.com/v1/pages/{pid}", headers=headers)
+            if not r.is_success:
+                return
+            page_data = r.json()
+
+            # Get page blocks (content)
+            blocks_r = await client.get(f"https://api.notion.com/v1/blocks/{pid}/children", headers=headers)
+            if not blocks_r.is_success:
+                return
+            blocks_data = blocks_r.json()
+
+        # Extract text from blocks
+        text_parts = []
+        child_page_ids = []
+        for block in blocks_data.get("results", []):
+            btype = block.get("type", "")
+            if btype == "child_page":
+                child_page_ids.append(block["id"])
+                child_title = block.get("child_page", {}).get("title", "")
+                text_parts.append(f"\n## {child_title}\n")
+            elif btype in ("paragraph", "heading_1", "heading_2", "heading_3",
+                           "bulleted_list_item", "numbered_list_item", "toggle", "quote", "callout"):
+                rich_text = block.get(btype, {}).get("rich_text", [])
+                line = "".join(t.get("plain_text", "") for t in rich_text)
+                if line:
+                    text_parts.append(line)
+            elif btype == "code":
+                code_text = "".join(t.get("plain_text", "") for t in block.get("code", {}).get("rich_text", []))
+                if code_text:
+                    text_parts.append(f"```\n{code_text}\n```")
+
+        # Extract page title
+        props = page_data.get("properties", {})
+        title = ""
+        for prop in props.values():
+            if prop.get("type") == "title":
+                title = "".join(t.get("plain_text", "") for t in prop.get("title", []))
+                break
+
+        full_text = f"# {title}\n\n" + "\n".join(text_parts) if title else "\n".join(text_parts)
+        if full_text.strip():
+            collected_pages.append({
+                "text": full_text,
+                "metadata": {
+                    "page_id": pid,
+                    "title": title,
+                    "source": "notion_folder",
+                    "parent_page_id": page_id,
+                    "depth": depth,
+                    "url": page_data.get("url", ""),
+                },
+            })
+
+        # Recurse into child pages
+        if recursive and child_page_ids:
+            for child_id in child_page_ids:
+                if len(collected_pages) >= max_pages:
+                    break
+                await fetch_page_content(child_id, depth + 1)
+
+    await fetch_page_content(page_id, 0)
+
+    return {
+        "documents": collected_pages,
+        "count": len(collected_pages),
+        "source": "notion_folder",
+        "root_page_id": page_id,
+    }

@@ -2106,3 +2106,601 @@ async def tool_retriever_tool(config: dict, input_data: dict, credential_id: str
 
     result = await handler(retriever_config, input_data, credential_id, db)
     return {"retriever_node_id": retriever_node_id, "result": result, **result}
+
+
+# ─── MCP Tool Helpers ─────────────────────────────────────────────────────────
+
+async def _call_mcp_tool(server_url: str, tool_name: str, arguments: dict,
+                         auth_header: str | None = None) -> dict:
+    """Helper to call a specific tool on any MCP server."""
+    from integrations.mcp_.handler import _build_client, _initialize, _rpc_call
+
+    creds = {"server_url": server_url}
+    if auth_header:
+        creds["auth_header"] = auth_header
+
+    async with _build_client(creds) as client:
+        await _initialize(client)
+        result = await _rpc_call(client, "tools/call", {"name": tool_name, "arguments": arguments})
+
+    content_blocks = result.get("content", [])
+    text = "\n".join(b.get("text", "") for b in content_blocks if isinstance(b, dict) and b.get("type") == "text")
+    return {"text": text, "content": content_blocks, "is_error": result.get("isError", False)}
+
+
+# ─── MCP: BraveSearch ─────────────────────────────────────────────────────────
+
+@register_node("tool.mcp_brave_search")
+async def tool_mcp_brave_search(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    MCP BraveSearch tool: performs web searches via the Brave Search MCP server.
+    Equivalent to Flowise's tools/MCP/BraveSearch/BraveSearchMCP.ts.
+
+    config:
+      - server_url: BraveSearch MCP server URL
+      - api_key: Brave Search API key (or from credential)
+      - query: search query (supports {{ }} templates)
+      - count: number of results (default: 10)
+    """
+    from oauth.flow import get_credential_data
+
+    query = _render(config.get("query", ""), input_data) or input_data.get("query", "")
+    if not query:
+        raise ValueError("tool.mcp_brave_search requires 'query'")
+
+    server_url = config.get("server_url", "")
+    api_key = config.get("api_key", "")
+    if not api_key and credential_id:
+        try:
+            creds = await get_credential_data(credential_id, db)
+            api_key = creds.get("api_key") or creds.get("token", "")
+            server_url = server_url or creds.get("server_url", "")
+        except Exception:
+            pass
+
+    count = int(config.get("count", 10))
+
+    if server_url:
+        auth_header = f"Bearer {api_key}" if api_key else None
+        return await _call_mcp_tool(server_url, "brave_web_search", {"query": query, "count": count}, auth_header)
+
+    # Fallback: direct Brave Search API call
+    if not api_key:
+        raise ValueError("tool.mcp_brave_search requires 'api_key' or 'server_url'")
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(
+            "https://api.search.brave.com/res/v1/web/search",
+            headers={"Accept": "application/json", "X-Subscription-Token": api_key},
+            params={"q": query, "count": count},
+        )
+        r.raise_for_status()
+        data = r.json()
+
+    results = data.get("web", {}).get("results", [])
+    text = "\n\n".join(f"**{r['title']}**\n{r.get('url', '')}\n{r.get('description', '')}" for r in results)
+    return {"text": text, "results": results, "query": query}
+
+
+# ─── MCP: Browserless ─────────────────────────────────────────────────────────
+
+@register_node("tool.mcp_browserless")
+async def tool_mcp_browserless(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    MCP Browserless tool: controls a headless browser via the Browserless MCP server.
+    Equivalent to Flowise's tools/MCP/Browserless/BrowserlessMCP.ts.
+
+    config:
+      - server_url: Browserless MCP server URL
+      - api_key: Browserless API token (or from credential)
+      - tool_name: specific Browserless tool (e.g. scrape, screenshot, pdf)
+      - url: target URL
+      - selector: CSS selector (for scrape operations)
+      - wait_for: element to wait for before capturing
+    """
+    from oauth.flow import get_credential_data
+
+    server_url = config.get("server_url", "")
+    api_key = config.get("api_key", "")
+    if (not server_url or not api_key) and credential_id:
+        try:
+            creds = await get_credential_data(credential_id, db)
+            server_url = server_url or creds.get("server_url", "")
+            api_key = api_key or creds.get("api_key") or creds.get("token", "")
+        except Exception:
+            pass
+
+    if not server_url:
+        raise ValueError("tool.mcp_browserless requires 'server_url'")
+
+    tool_name = config.get("tool_name", "scrape")
+    target_url = _render(config.get("url", ""), input_data) or input_data.get("url", "")
+    arguments: dict = {"url": target_url}
+    if config.get("selector"):
+        arguments["selector"] = config["selector"]
+    if config.get("wait_for"):
+        arguments["waitFor"] = config["wait_for"]
+
+    auth_header = f"Bearer {api_key}" if api_key else None
+    return await _call_mcp_tool(server_url, tool_name, arguments, auth_header)
+
+
+# ─── MCP: Custom MCP (generic server) ────────────────────────────────────────
+
+@register_node("tool.mcp_custom")
+async def tool_mcp_custom(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    CustomMCP tool: connects to any arbitrary MCP-compliant server and calls
+    a specified tool. Equivalent to Flowise's tools/MCP/CustomMCP/CustomMCP.ts.
+
+    config:
+      - server_url: MCP server URL (or from credential)
+      - auth_header: Authorization header value (optional)
+      - tool_name: name of the tool to call on the server
+      - arguments: dict of arguments to pass to the tool
+    """
+    from oauth.flow import get_credential_data
+
+    server_url = config.get("server_url", "")
+    auth_header_val = config.get("auth_header", "")
+    if not server_url and credential_id:
+        try:
+            creds = await get_credential_data(credential_id, db)
+            server_url = creds.get("server_url", "")
+            auth_header_val = auth_header_val or creds.get("auth_header", "")
+        except Exception:
+            pass
+
+    if not server_url:
+        raise ValueError("tool.mcp_custom requires 'server_url'")
+
+    tool_name = config.get("tool_name") or input_data.get("tool_name")
+    if not tool_name:
+        raise ValueError("tool.mcp_custom requires 'tool_name'")
+
+    arguments = config.get("arguments") or input_data.get("arguments") or {}
+    auth = auth_header_val or None
+    return await _call_mcp_tool(server_url, tool_name, arguments, auth)
+
+
+# ─── MCP: Custom MCP Server Tool (stdio/process-based) ───────────────────────
+
+@register_node("tool.mcp_custom_server")
+async def tool_mcp_custom_server(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    CustomMcpServerTool: connects to a custom MCP server and exposes all its
+    tools. Equivalent to Flowise's tools/MCP/CustomMcpServerTool/CustomMcpServerTool.ts.
+
+    config:
+      - server_url: MCP server URL
+      - auth_header: Authorization header (optional, or from credential)
+      - tool_name: tool to call (if None, lists available tools)
+      - arguments: tool arguments dict
+    """
+    from oauth.flow import get_credential_data
+    from integrations.mcp_.handler import _build_client, _initialize, _rpc_call
+
+    server_url = config.get("server_url", "")
+    auth_header_val = config.get("auth_header", "")
+    if not server_url and credential_id:
+        try:
+            creds = await get_credential_data(credential_id, db)
+            server_url = creds.get("server_url", "")
+            auth_header_val = auth_header_val or creds.get("auth_header", "")
+        except Exception:
+            pass
+
+    if not server_url:
+        raise ValueError("tool.mcp_custom_server requires 'server_url'")
+
+    creds_dict = {"server_url": server_url}
+    if auth_header_val:
+        creds_dict["auth_header"] = auth_header_val
+
+    tool_name = config.get("tool_name") or input_data.get("tool_name")
+
+    async with _build_client(creds_dict) as client:
+        await _initialize(client)
+
+        if not tool_name:
+            # List available tools
+            result = await _rpc_call(client, "tools/list")
+            tools = result.get("tools", [])
+            return {
+                "tools": [{"name": t["name"], "description": t.get("description", "")} for t in tools],
+                "server_url": server_url,
+            }
+
+        arguments = config.get("arguments") or input_data.get("arguments") or {}
+        result = await _rpc_call(client, "tools/call", {"name": tool_name, "arguments": arguments})
+
+    content_blocks = result.get("content", [])
+    text = "\n".join(b.get("text", "") for b in content_blocks if isinstance(b, dict) and b.get("type") == "text")
+    return {"text": text, "content": content_blocks, "tool_name": tool_name, "server_url": server_url}
+
+
+# ─── MCP: GitHub ──────────────────────────────────────────────────────────────
+
+@register_node("tool.mcp_github")
+async def tool_mcp_github(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    MCP GitHub tool: interacts with GitHub via the official GitHub MCP server.
+    Equivalent to Flowise's tools/MCP/Github/GithubMCP.ts.
+
+    config:
+      - server_url: GitHub MCP server URL (default: https://api.githubcopilot.com/mcp/)
+      - token: GitHub Personal Access Token (or from credential)
+      - tool_name: GitHub MCP tool (e.g. search_repositories, get_file_contents,
+                   create_issue, list_commits, etc.)
+      - arguments: tool-specific arguments dict
+    """
+    from oauth.flow import get_credential_data
+
+    server_url = config.get("server_url", "https://api.githubcopilot.com/mcp/")
+    token = config.get("token", "")
+    if not token and credential_id:
+        try:
+            creds = await get_credential_data(credential_id, db)
+            token = creds.get("token") or creds.get("api_key") or creds.get("access_token", "")
+            server_url = creds.get("server_url", server_url)
+        except Exception:
+            pass
+
+    if not token:
+        raise ValueError("tool.mcp_github requires a GitHub token")
+
+    tool_name = config.get("tool_name") or input_data.get("tool_name")
+    if not tool_name:
+        raise ValueError("tool.mcp_github requires 'tool_name'")
+
+    arguments = config.get("arguments") or input_data.get("arguments") or {}
+    # Merge common config fields into arguments
+    for key in ("owner", "repo", "branch", "path", "query", "title", "body"):
+        if config.get(key) and key not in arguments:
+            arguments[key] = _render(str(config[key]), input_data)
+
+    return await _call_mcp_tool(server_url, tool_name, arguments, f"Bearer {token}")
+
+
+# ─── MCP: Pipedream ───────────────────────────────────────────────────────────
+
+@register_node("tool.mcp_pipedream")
+async def tool_mcp_pipedream(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    MCP Pipedream tool: connects to Pipedream's MCP server to access thousands
+    of integrated app actions. Equivalent to Flowise's
+    tools/MCP/Pipedream/PipedreamMCP.ts.
+
+    config:
+      - server_url: Pipedream MCP server URL
+      - access_token: Pipedream access token (or from credential)
+      - tool_name: Pipedream action name
+      - arguments: action arguments dict
+    """
+    from oauth.flow import get_credential_data
+
+    server_url = config.get("server_url", "")
+    access_token = config.get("access_token", "")
+    if (not server_url or not access_token) and credential_id:
+        try:
+            creds = await get_credential_data(credential_id, db)
+            server_url = server_url or creds.get("server_url", "")
+            access_token = access_token or creds.get("access_token") or creds.get("token", "")
+        except Exception:
+            pass
+
+    if not server_url:
+        raise ValueError("tool.mcp_pipedream requires 'server_url'")
+
+    tool_name = config.get("tool_name") or input_data.get("tool_name")
+    if not tool_name:
+        raise ValueError("tool.mcp_pipedream requires 'tool_name'")
+
+    arguments = config.get("arguments") or input_data.get("arguments") or {}
+    auth = f"Bearer {access_token}" if access_token else None
+    return await _call_mcp_tool(server_url, tool_name, arguments, auth)
+
+
+# ─── MCP: PostgreSQL ──────────────────────────────────────────────────────────
+
+@register_node("tool.mcp_postgresql")
+async def tool_mcp_postgresql(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    MCP PostgreSQL tool: queries a PostgreSQL database via an MCP server.
+    Equivalent to Flowise's tools/MCP/PostgreSQL/PostgreSQLMCP.ts.
+
+    config:
+      - server_url: PostgreSQL MCP server URL (or direct connection)
+      - dsn: PostgreSQL connection string (alternative to server_url)
+      - tool_name: tool to call (default: query)
+      - query: SQL query (for direct mode)
+      - arguments: arguments for the MCP tool
+    """
+    from oauth.flow import get_credential_data
+
+    server_url = config.get("server_url", "")
+    if not server_url and credential_id:
+        try:
+            creds = await get_credential_data(credential_id, db)
+            server_url = creds.get("server_url", "")
+        except Exception:
+            pass
+
+    tool_name = config.get("tool_name", "query")
+    query = _render(config.get("query", ""), input_data) or input_data.get("query", "")
+
+    if server_url:
+        arguments = config.get("arguments") or {}
+        if query and "query" not in arguments:
+            arguments["query"] = query
+        return await _call_mcp_tool(server_url, tool_name, arguments)
+
+    # Direct PostgreSQL execution fallback
+    dsn = config.get("dsn", "")
+    if not dsn and credential_id:
+        try:
+            creds = await get_credential_data(credential_id, db)
+            dsn = creds.get("dsn") or creds.get("connection_string", "")
+        except Exception:
+            pass
+
+    if not dsn:
+        raise ValueError("tool.mcp_postgresql requires 'server_url' or 'dsn'")
+    if not query:
+        raise ValueError("tool.mcp_postgresql requires 'query'")
+
+    try:
+        import asyncpg  # type: ignore
+        conn = await asyncpg.connect(dsn)
+        try:
+            rows = await conn.fetch(query)
+            records = [dict(r) for r in rows]
+            text = f"Query returned {len(records)} rows.\n" + "\n".join(str(r) for r in records[:50])
+            return {"text": text, "records": records, "count": len(records)}
+        finally:
+            await conn.close()
+    except ImportError:
+        return {"error": "asyncpg not installed. Install with: pip install asyncpg"}
+
+
+# ─── MCP: Sequential Thinking ─────────────────────────────────────────────────
+
+@register_node("tool.mcp_sequential_thinking")
+async def tool_mcp_sequential_thinking(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    MCP Sequential Thinking tool: guides LLMs through structured step-by-step
+    reasoning via the Sequential Thinking MCP server.
+    Equivalent to Flowise's tools/MCP/SequentialThinking/SequentialThinkingMCP.ts.
+
+    config:
+      - server_url: Sequential Thinking MCP server URL
+      - problem: the problem to think through (supports {{ }} templates)
+      - max_thoughts: max thinking steps (default: 5)
+    """
+    from oauth.flow import get_credential_data
+
+    server_url = config.get("server_url", "")
+    if not server_url and credential_id:
+        try:
+            creds = await get_credential_data(credential_id, db)
+            server_url = creds.get("server_url", "")
+        except Exception:
+            pass
+
+    problem = _render(config.get("problem", ""), input_data) or input_data.get("problem", json.dumps(input_data))
+    max_thoughts = int(config.get("max_thoughts", 5))
+
+    if server_url:
+        return await _call_mcp_tool(server_url, "sequentialthinking", {
+            "thought": problem,
+            "nextThoughtNeeded": True,
+            "thoughtNumber": 1,
+            "totalThoughts": max_thoughts,
+        })
+
+    # Fallback: structured chain-of-thought via built-in LLM call
+    provider = config.get("provider", "openai")
+    model = config.get("model", "")
+    thoughts = []
+    current_thought = problem
+
+    for i in range(max_thoughts):
+        system = (
+            f"You are a step-by-step reasoning assistant. This is thought {i+1} of {max_thoughts}.\n"
+            "Analyze the problem, make one logical step forward, and indicate if more thinking is needed."
+        )
+        from integrations.agentflow.handler import _call_llm as _af_call_llm
+        response = await _af_call_llm(provider, model, system, current_thought)
+        thoughts.append({"step": i + 1, "thought": response})
+        current_thought = f"Previous thought: {response}\n\nContinue reasoning about: {problem}"
+        if any(phrase in response.lower() for phrase in ("final answer", "conclusion", "therefore", "in conclusion")):
+            break
+
+    final = thoughts[-1]["thought"] if thoughts else ""
+    return {
+        "text": final,
+        "thoughts": thoughts,
+        "problem": problem,
+        "steps_completed": len(thoughts),
+    }
+
+
+# ─── MCP: Slack ───────────────────────────────────────────────────────────────
+
+@register_node("tool.mcp_slack")
+async def tool_mcp_slack(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    MCP Slack tool: interacts with Slack via the official Slack MCP server.
+    Equivalent to Flowise's tools/MCP/Slack/SlackMCP.ts.
+
+    config:
+      - server_url: Slack MCP server URL
+      - bot_token: Slack Bot OAuth token (or from credential)
+      - tool_name: Slack action (e.g. send_message, list_channels, get_history)
+      - arguments: tool arguments dict
+      - channel: Slack channel ID/name (merged into arguments)
+      - text: message text (merged into arguments for send_message)
+    """
+    from oauth.flow import get_credential_data
+
+    server_url = config.get("server_url", "")
+    bot_token = config.get("bot_token", "")
+    if (not server_url or not bot_token) and credential_id:
+        try:
+            creds = await get_credential_data(credential_id, db)
+            server_url = server_url or creds.get("server_url", "")
+            bot_token = bot_token or creds.get("bot_token") or creds.get("token", "")
+        except Exception:
+            pass
+
+    tool_name = config.get("tool_name", "send_message")
+    arguments = dict(config.get("arguments") or {})
+
+    if config.get("channel") and "channel" not in arguments:
+        arguments["channel"] = _render(str(config["channel"]), input_data)
+    if config.get("text") and "text" not in arguments:
+        arguments["text"] = _render(str(config["text"]), input_data)
+
+    if server_url:
+        auth = f"Bearer {bot_token}" if bot_token else None
+        return await _call_mcp_tool(server_url, tool_name, arguments, auth)
+
+    # Fallback: direct Slack Web API call
+    if not bot_token:
+        raise ValueError("tool.mcp_slack requires 'bot_token' or 'server_url'")
+
+    slack_method_map = {
+        "send_message": ("POST", "https://slack.com/api/chat.postMessage"),
+        "list_channels": ("GET", "https://slack.com/api/conversations.list"),
+        "get_history": ("GET", "https://slack.com/api/conversations.history"),
+    }
+    method, url = slack_method_map.get(tool_name, ("POST", f"https://slack.com/api/{tool_name}"))
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        if method == "GET":
+            r = await client.get(url, headers={"Authorization": f"Bearer {bot_token}"}, params=arguments)
+        else:
+            r = await client.post(url, headers={"Authorization": f"Bearer {bot_token}"}, json=arguments)
+        r.raise_for_status()
+        data = r.json()
+
+    if not data.get("ok"):
+        return {"error": data.get("error", "Unknown Slack error"), "data": data}
+    return {"text": str(data), "data": data, "ok": True}
+
+
+# ─── MCP: Supergateway ────────────────────────────────────────────────────────
+
+@register_node("tool.mcp_supergateway")
+async def tool_mcp_supergateway(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    MCP Supergateway tool: connects to Supermachine's gateway for accessing
+    multiple MCP servers through a single endpoint.
+    Equivalent to Flowise's tools/MCP/Supergateway/SupergatewayMCP.ts.
+
+    config:
+      - server_url: Supergateway MCP endpoint URL
+      - api_key: Supergateway API key (or from credential)
+      - tool_name: tool to invoke
+      - arguments: tool arguments dict
+    """
+    from oauth.flow import get_credential_data
+
+    server_url = config.get("server_url", "")
+    api_key = config.get("api_key", "")
+    if (not server_url or not api_key) and credential_id:
+        try:
+            creds = await get_credential_data(credential_id, db)
+            server_url = server_url or creds.get("server_url", "")
+            api_key = api_key or creds.get("api_key") or creds.get("token", "")
+        except Exception:
+            pass
+
+    if not server_url:
+        raise ValueError("tool.mcp_supergateway requires 'server_url'")
+
+    tool_name = config.get("tool_name") or input_data.get("tool_name")
+    if not tool_name:
+        raise ValueError("tool.mcp_supergateway requires 'tool_name'")
+
+    arguments = config.get("arguments") or input_data.get("arguments") or {}
+    auth = f"Bearer {api_key}" if api_key else None
+    return await _call_mcp_tool(server_url, tool_name, arguments, auth)
+
+
+# ─── MCP: Teradata ────────────────────────────────────────────────────────────
+
+@register_node("tool.mcp_teradata")
+async def tool_mcp_teradata(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    MCP Teradata tool: queries Teradata databases via the Teradata MCP server.
+    Equivalent to Flowise's tools/MCP/Teradata/TeradataMCP.ts.
+
+    config:
+      - server_url: Teradata MCP server URL
+      - username: Teradata username (or from credential)
+      - password: Teradata password (or from credential)
+      - host: Teradata host (for direct connection)
+      - tool_name: MCP tool name (default: execute_query)
+      - query: SQL query (supports {{ }} templates)
+      - arguments: additional tool arguments
+    """
+    from oauth.flow import get_credential_data
+
+    server_url = config.get("server_url", "")
+    username = config.get("username", "")
+    password = config.get("password", "")
+    if (not server_url or not username) and credential_id:
+        try:
+            creds = await get_credential_data(credential_id, db)
+            server_url = server_url or creds.get("server_url", "")
+            username = username or creds.get("username", "")
+            password = password or creds.get("password", "")
+        except Exception:
+            pass
+
+    tool_name = config.get("tool_name", "execute_query")
+    query = _render(config.get("query", ""), input_data) or input_data.get("query", "")
+
+    if server_url:
+        arguments = config.get("arguments") or {}
+        if query and "query" not in arguments:
+            arguments["query"] = query
+
+        # Build basic auth header for Teradata MCP
+        if username and password:
+            import base64
+            auth_bytes = base64.b64encode(f"{username}:{password}".encode()).decode()
+            auth = f"Basic {auth_bytes}"
+        else:
+            auth = None
+
+        return await _call_mcp_tool(server_url, tool_name, arguments, auth)
+
+    # Direct teradatasql fallback
+    if not query:
+        raise ValueError("tool.mcp_teradata requires 'query'")
+
+    try:
+        import teradatasql  # type: ignore
+        host = config.get("host", "")
+        if not host:
+            raise ValueError("tool.mcp_teradata requires 'host' for direct connection")
+
+        import asyncio
+        loop = asyncio.get_event_loop()
+
+        def _run():
+            with teradatasql.connect(host=host, user=username, password=password) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query)
+                    columns = [d[0] for d in (cur.description or [])]
+                    rows = cur.fetchall()
+                    records = [dict(zip(columns, row)) for row in rows]
+                    return records
+
+        records = await loop.run_in_executor(None, _run)
+        text = f"Query returned {len(records)} rows."
+        return {"text": text, "records": records, "count": len(records)}
+    except ImportError:
+        return {"error": "teradatasql not installed. Install with: pip install teradatasql"}

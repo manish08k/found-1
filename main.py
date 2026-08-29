@@ -86,6 +86,7 @@ import integrations.moderation.handler
 import integrations.responsesynthesizer.handler
 import integrations.sequentialagents.handler
 import integrations.utilities.handler
+import integrations.multiagents.handler
 
 log = structlog.get_logger(__name__)
 

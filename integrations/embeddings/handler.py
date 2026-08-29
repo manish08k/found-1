@@ -509,3 +509,263 @@ async def embedding_nomic(config: dict, input_data: dict, credential_id: str | N
         "provider": "nomic",
         "dimensions": len(embeddings[0]) if embeddings else 0,
     }
+
+
+# ─── embedding.baidu_qianfan ─────────────────────────────────────────────────
+
+@register_node("embedding.baidu_qianfan")
+async def embedding_baidu_qianfan(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Baidu Qianfan Embeddings: embed text using Baidu's Qianfan embedding API.
+
+    config:
+      - model: embedding model (default: embedding-v1)
+      - text/texts: text or list of texts to embed
+    """
+    from core.config import settings
+
+    api_key = getattr(settings, "BAIDU_API_KEY", None)
+    secret_key = getattr(settings, "BAIDU_SECRET_KEY", None)
+    if not api_key or not secret_key:
+        raise ValueError("embedding.baidu_qianfan requires BAIDU_API_KEY and BAIDU_SECRET_KEY")
+
+    # Step 1: Get access token
+    async with httpx.AsyncClient(timeout=30) as client:
+        token_resp = await client.post(
+            "https://aip.baidubce.com/oauth/2.0/token",
+            params={"grant_type": "client_credentials", "client_id": api_key, "client_secret": secret_key},
+        )
+        token_resp.raise_for_status()
+        access_token = token_resp.json()["access_token"]
+
+        model = config.get("model", "embedding-v1")
+        texts = _to_list(config.get("text") or config.get("texts"), input_data)
+
+        r = await client.post(
+            f"https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/embeddings/{model}",
+            params={"access_token": access_token},
+            json={"input": texts},
+        )
+        r.raise_for_status()
+        data = r.json()
+
+    embeddings = [item["embedding"] for item in data.get("data", [])]
+    return {
+        "embeddings": embeddings,
+        "embedding": embeddings[0] if len(embeddings) == 1 else embeddings,
+        "model": model,
+        "provider": "baidu_qianfan",
+        "dimensions": len(embeddings[0]) if embeddings else 0,
+    }
+
+
+# ─── embedding.google_vertex_ai ──────────────────────────────────────────────
+
+@register_node("embedding.google_vertex_ai")
+async def embedding_google_vertex_ai(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Google Vertex AI Embeddings: embed text using Vertex AI text-embedding models.
+
+    config:
+      - model: embedding model (default: text-embedding-004)
+      - project_id: GCP project ID
+      - location: GCP region (default: us-central1)
+      - text/texts: text or list of texts to embed
+    """
+    from core.config import settings
+
+    api_key = getattr(settings, "VERTEX_AI_API_KEY", None)
+    project_id = config.get("project_id") or getattr(settings, "GOOGLE_CLOUD_PROJECT_ID", None)
+    location = config.get("location", "us-central1")
+    model = config.get("model", "text-embedding-004")
+    texts = _to_list(config.get("text") or config.get("texts"), input_data)
+
+    if api_key:
+        # Use API key auth
+        all_embeddings = []
+        async with httpx.AsyncClient(timeout=60) as client:
+            for text in texts:
+                r = await client.post(
+                    f"https://{location}-aiplatform.googleapis.com/v1/projects/{project_id}/locations/{location}/publishers/google/models/{model}:predict",
+                    params={"key": api_key},
+                    json={"instances": [{"content": text}]},
+                )
+                r.raise_for_status()
+                pred = r.json()["predictions"][0]
+                all_embeddings.append(pred.get("embeddings", {}).get("values", []))
+    else:
+        try:
+            import google.auth  # type: ignore
+            import google.auth.transport.requests  # type: ignore
+
+            creds, detected_project = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+            request = google.auth.transport.requests.Request()
+            creds.refresh(request)
+            access_token = creds.token
+            if not project_id:
+                project_id = detected_project
+
+            all_embeddings = []
+            async with httpx.AsyncClient(timeout=60) as client:
+                for text in texts:
+                    r = await client.post(
+                        f"https://{location}-aiplatform.googleapis.com/v1/projects/{project_id}/locations/{location}/publishers/google/models/{model}:predict",
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        json={"instances": [{"content": text}]},
+                    )
+                    r.raise_for_status()
+                    pred = r.json()["predictions"][0]
+                    all_embeddings.append(pred.get("embeddings", {}).get("values", []))
+        except ImportError:
+            raise ValueError("embedding.google_vertex_ai requires VERTEX_AI_API_KEY or google-auth library")
+
+    return {
+        "embeddings": all_embeddings,
+        "embedding": all_embeddings[0] if len(all_embeddings) == 1 else all_embeddings,
+        "model": model,
+        "provider": "google_vertex_ai",
+        "dimensions": len(all_embeddings[0]) if all_embeddings else 0,
+    }
+
+
+# ─── embedding.ibm_watsonx ───────────────────────────────────────────────────
+
+@register_node("embedding.ibm_watsonx")
+async def embedding_ibm_watsonx(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    IBM WatsonX Embeddings: embed text using IBM WatsonX.ai.
+
+    config:
+      - model: embedding model (default: ibm/slate-125m-english-rtrvr)
+      - text/texts: text or list of texts to embed
+    """
+    from core.config import settings
+
+    api_key = getattr(settings, "IBM_WATSONX_API_KEY", None)
+    project_id = getattr(settings, "IBM_WATSONX_PROJECT_ID", None)
+    base_url = getattr(settings, "IBM_WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
+
+    if not api_key or not project_id:
+        raise ValueError("embedding.ibm_watsonx requires IBM_WATSONX_API_KEY and IBM_WATSONX_PROJECT_ID")
+
+    # Get IBM IAM token
+    async with httpx.AsyncClient(timeout=30) as client:
+        token_resp = await client.post(
+            "https://iam.cloud.ibm.com/identity/token",
+            data={"apikey": api_key, "grant_type": "urn:ibm:params:oauth:grant-type:apikey"},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        token_resp.raise_for_status()
+        iam_token = token_resp.json()["access_token"]
+
+        model = config.get("model", "ibm/slate-125m-english-rtrvr")
+        texts = _to_list(config.get("text") or config.get("texts"), input_data)
+
+        r = await client.post(
+            f"{base_url}/ml/v1/text/embeddings",
+            params={"version": "2024-03-14"},
+            headers={"Authorization": f"Bearer {iam_token}", "Content-Type": "application/json"},
+            json={"model_id": model, "inputs": texts, "project_id": project_id},
+        )
+        r.raise_for_status()
+        data = r.json()
+
+    embeddings = [item["embedding"] for item in data.get("results", [])]
+    return {
+        "embeddings": embeddings,
+        "embedding": embeddings[0] if len(embeddings) == 1 else embeddings,
+        "model": model,
+        "provider": "ibm_watsonx",
+        "dimensions": len(embeddings[0]) if embeddings else 0,
+    }
+
+
+# ─── embedding.local_ai ──────────────────────────────────────────────────────
+
+@register_node("embedding.local_ai")
+async def embedding_local_ai(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    LocalAI Embeddings: embed text using a self-hosted LocalAI instance.
+    LocalAI is OpenAI-compatible, so we use the /v1/embeddings endpoint.
+
+    config:
+      - base_url: LocalAI server URL (default: http://localhost:8080)
+      - model: model name (default: text-embedding-ada-002)
+      - api_key: optional API key if auth is enabled
+      - text/texts: text or list of texts to embed
+    """
+    base_url = config.get("base_url", "http://localhost:8080").rstrip("/")
+    model = config.get("model", "text-embedding-ada-002")
+    api_key = config.get("api_key", "localai")
+    texts = _to_list(config.get("text") or config.get("texts"), input_data)
+
+    headers: dict = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            f"{base_url}/v1/embeddings",
+            json={"model": model, "input": texts},
+            headers=headers,
+        )
+        r.raise_for_status()
+        data = r.json()
+
+    embeddings = [item["embedding"] for item in data.get("data", [])]
+    return {
+        "embeddings": embeddings,
+        "embedding": embeddings[0] if len(embeddings) == 1 else embeddings,
+        "model": model,
+        "provider": "local_ai",
+        "base_url": base_url,
+        "dimensions": len(embeddings[0]) if embeddings else 0,
+    }
+
+
+# ─── embedding.openai_custom ─────────────────────────────────────────────────
+
+@register_node("embedding.openai_custom")
+async def embedding_openai_custom(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    OpenAI-Compatible Custom Embeddings: embed text using any OpenAI-compatible API.
+
+    config:
+      - base_url: custom API base URL
+      - api_key: API key for the custom endpoint
+      - model: embedding model name (default: text-embedding-ada-002)
+      - text/texts: text or list of texts to embed
+    """
+    from core.config import settings
+
+    base_url = config.get("base_url") or getattr(settings, "OPENAI_CUSTOM_BASE_URL", "")
+    api_key = config.get("api_key") or getattr(settings, "OPENAI_CUSTOM_API_KEY", "")
+    model = config.get("model", "text-embedding-ada-002")
+    texts = _to_list(config.get("text") or config.get("texts"), input_data)
+
+    if not base_url:
+        raise ValueError("embedding.openai_custom requires 'base_url'")
+
+    base_url = base_url.rstrip("/")
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            f"{base_url}/v1/embeddings",
+            json={"model": model, "input": texts},
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        r.raise_for_status()
+        data = r.json()
+
+    embeddings = [item["embedding"] for item in data.get("data", [])]
+    return {
+        "embeddings": embeddings,
+        "embedding": embeddings[0] if len(embeddings) == 1 else embeddings,
+        "model": model,
+        "provider": "openai_custom",
+        "base_url": base_url,
+        "dimensions": len(embeddings[0]) if embeddings else 0,
+    }

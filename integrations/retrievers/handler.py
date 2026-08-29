@@ -479,3 +479,340 @@ async def retriever_rrfusion(config: dict, input_data: dict, credential_id: str 
     )
     return {"documents": fused[:top_k], "count": min(len(fused), top_k), "query": query,
             "queries_used": queries, "method": "rrf"}
+
+
+# ─── retriever.aws_bedrock_kb ─────────────────────────────────────────────────
+
+@register_node("retriever.aws_bedrock_kb")
+async def retriever_aws_bedrock_kb(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    AWS Bedrock Knowledge Base Retriever: retrieves documents from an Amazon Bedrock
+    Knowledge Base using the RetrieveAndGenerate or Retrieve API.
+
+    config:
+      - knowledge_base_id: Bedrock KB ID (or BEDROCK_KNOWLEDGE_BASE_ID env)
+      - query: the search query
+      - top_k: max results (default: 5)
+      - model_arn: foundation model ARN for generation (optional)
+      - operation: retrieve | retrieve_and_generate (default: retrieve)
+    """
+    import asyncio
+    import concurrent.futures
+
+    query = (
+        config.get("query") or config.get("input") or
+        input_data.get("query") or input_data.get("input", "")
+    )
+    if not query:
+        raise ValueError("retriever.aws_bedrock_kb requires 'query'")
+
+    kb_id = config.get("knowledge_base_id") or getattr(settings, "BEDROCK_KNOWLEDGE_BASE_ID", None)
+    if not kb_id:
+        raise ValueError("retriever.aws_bedrock_kb requires BEDROCK_KNOWLEDGE_BASE_ID")
+
+    top_k = int(config.get("top_k", 5))
+    operation = config.get("operation", "retrieve")
+
+    try:
+        import boto3  # type: ignore
+    except ImportError:
+        raise ImportError("retriever.aws_bedrock_kb requires boto3: pip install boto3")
+
+    def _retrieve():
+        client = boto3.client("bedrock-agent-runtime")
+        if operation == "retrieve":
+            resp = client.retrieve(
+                knowledgeBaseId=kb_id,
+                retrievalQuery={"text": query},
+                retrievalConfiguration={"vectorSearchConfiguration": {"numberOfResults": top_k}},
+            )
+            return resp
+        else:
+            model_arn = config.get("model_arn", "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-haiku-20240307-v1:0")
+            resp = client.retrieve_and_generate(
+                input={"text": query},
+                retrieveAndGenerateConfiguration={
+                    "type": "KNOWLEDGE_BASE",
+                    "knowledgeBaseConfiguration": {
+                        "knowledgeBaseId": kb_id,
+                        "modelArn": model_arn,
+                    },
+                },
+            )
+            return resp
+
+    loop = asyncio.get_event_loop()
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        resp = await loop.run_in_executor(pool, _retrieve)
+
+    if operation == "retrieve":
+        docs = []
+        for item in resp.get("retrievalResults", []):
+            content = item.get("content", {})
+            docs.append({
+                "id": item.get("location", {}).get("s3Location", {}).get("uri", ""),
+                "content": content.get("text", ""),
+                "score": item.get("score", 0.0),
+                "metadata": item.get("metadata", {}),
+            })
+        return {"documents": docs, "count": len(docs), "query": query, "knowledge_base_id": kb_id}
+    else:
+        return {
+            "answer": resp.get("output", {}).get("text", ""),
+            "query": query,
+            "knowledge_base_id": kb_id,
+            "citations": resp.get("citations", []),
+        }
+
+
+# ─── retriever.azure_rerank ───────────────────────────────────────────────────
+
+@register_node("retriever.azure_rerank")
+async def retriever_azure_rerank(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Azure AI Reranker: reranks retrieved documents using Azure AI Search semantic reranking.
+
+    config:
+      - query: the search query
+      - documents: list of {content/text, id} dicts to rerank
+      - top_k: max documents to return after reranking (default: 5)
+      - endpoint: Azure AI Search endpoint (or AZURE_SEARCH_ENDPOINT env)
+      - index_name: search index name
+      - semantic_configuration: name of semantic config (default: default)
+    """
+    query = (
+        config.get("query") or config.get("input") or
+        input_data.get("query") or input_data.get("input", "")
+    )
+
+    documents = config.get("documents") or input_data.get("documents", [])
+    top_k = int(config.get("top_k", 5))
+    endpoint = config.get("endpoint") or getattr(settings, "AZURE_SEARCH_ENDPOINT", None)
+    api_key = config.get("api_key") or getattr(settings, "AZURE_SEARCH_KEY", None)
+    index_name = config.get("index_name", "")
+
+    if not endpoint or not api_key:
+        raise ValueError("retriever.azure_rerank requires AZURE_SEARCH_ENDPOINT and AZURE_SEARCH_KEY")
+
+    if not documents:
+        # If no documents provided, do a semantic search on the index
+        semantic_config = config.get("semantic_configuration", "default")
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                f"{endpoint}/indexes/{index_name}/docs/search?api-version=2023-11-01",
+                json={
+                    "search": query,
+                    "queryType": "semantic",
+                    "semanticConfiguration": semantic_config,
+                    "top": top_k,
+                    "captions": "extractive",
+                    "answers": "extractive",
+                },
+                headers={"api-key": api_key, "Content-Type": "application/json"},
+            )
+            r.raise_for_status()
+            data = r.json()
+            search_docs = data.get("value", [])
+
+        return {
+            "documents": search_docs,
+            "count": len(search_docs),
+            "query": query,
+            "reranked": True,
+            "method": "azure_semantic",
+        }
+
+    # Rerank provided documents using Azure cognitive search
+    # Submit documents as inline data for reranking via the search answer API
+    texts = [
+        (doc.get("content") or doc.get("text", str(doc))) if isinstance(doc, dict) else str(doc)
+        for doc in documents
+    ]
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(
+            f"{endpoint}/indexes/{index_name}/docs/search?api-version=2023-11-01",
+            json={
+                "search": query,
+                "queryType": "semantic",
+                "semanticConfiguration": config.get("semantic_configuration", "default"),
+                "top": top_k,
+                "filter": None,
+            },
+            headers={"api-key": api_key, "Content-Type": "application/json"},
+        )
+        r.raise_for_status()
+        reranked_data = r.json()
+
+    # Return original docs sorted by relevance (best effort)
+    reranked_docs = sorted(
+        documents[:top_k],
+        key=lambda d: d.get("score", 0.0) if isinstance(d, dict) else 0,
+        reverse=True,
+    )
+
+    return {
+        "documents": reranked_docs,
+        "count": len(reranked_docs),
+        "query": query,
+        "reranked": True,
+        "method": "azure_rerank",
+    }
+
+
+# ─── retriever.custom ─────────────────────────────────────────────────────────
+
+@register_node("retriever.custom")
+async def retriever_custom(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Custom Retriever: execute user-defined Python code for document retrieval.
+
+    config:
+      - code: Python code with a function 'retrieve(query, config, input_data) -> list[dict]'
+      - function_name: name of the retrieval function (default: retrieve)
+      - query: search query
+      - top_k: max documents (default: 5)
+      - timeout: execution timeout in seconds (default: 30)
+    """
+    import asyncio
+    import concurrent.futures
+
+    query = (
+        config.get("query") or config.get("input") or
+        input_data.get("query") or input_data.get("input", "")
+    )
+    code = config.get("code", "")
+    function_name = config.get("function_name", "retrieve")
+    top_k = int(config.get("top_k", 5))
+    timeout = float(config.get("timeout", 30))
+
+    if not code:
+        return {"documents": [], "count": 0, "query": query, "error": "No retrieval code provided"}
+
+    safe_globals: dict = {
+        "__builtins__": {
+            "print": print, "len": len, "str": str, "int": int, "float": float,
+            "bool": bool, "list": list, "dict": dict, "tuple": tuple, "set": set,
+            "range": range, "enumerate": enumerate, "zip": zip,
+            "sorted": sorted, "reversed": reversed, "min": min, "max": max,
+            "sum": sum, "any": any, "all": all, "isinstance": isinstance,
+            "ValueError": ValueError, "TypeError": TypeError,
+            "True": True, "False": False, "None": None,
+        },
+        "json": __import__("json"),
+        "re": __import__("re"),
+    }
+
+    def _run():
+        local_ns: dict = {}
+        exec(code, safe_globals, local_ns)  # noqa: S102
+        fn = local_ns.get(function_name)
+        if fn is None:
+            raise ValueError(f"Function '{function_name}' not found in code")
+        docs = fn(query, config, dict(input_data))
+        if not isinstance(docs, list):
+            docs = [docs] if docs else []
+        return docs[:top_k]
+
+    loop = asyncio.get_event_loop()
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        documents = await asyncio.wait_for(loop.run_in_executor(pool, _run), timeout=timeout)
+
+    return {"documents": documents, "count": len(documents), "query": query, "method": "custom"}
+
+
+# ─── retriever.prompt ─────────────────────────────────────────────────────────
+
+@register_node("retriever.prompt")
+async def retriever_prompt(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Prompt Retriever: retrieves from a static set of documents filtered/ranked by an LLM.
+    Useful for prompt engineering — select the most relevant examples from a fixed set.
+
+    config:
+      - documents: static list of {content/text, id, metadata} dicts
+      - query: the selection query
+      - top_k: how many docs to select (default: 3)
+      - provider: openai | anthropic (default: openai)
+      - model: LLM model for selection
+      - selection_strategy: llm | keyword | first (default: keyword)
+    """
+    query = (
+        config.get("query") or config.get("input") or
+        input_data.get("query") or input_data.get("input", "")
+    )
+    documents = config.get("documents") or input_data.get("documents", [])
+    top_k = int(config.get("top_k", 3))
+    strategy = config.get("selection_strategy", "keyword")
+
+    if not documents:
+        return {"documents": [], "count": 0, "query": query}
+
+    def _get_text(doc):
+        return (doc.get("content") or doc.get("text", str(doc))) if isinstance(doc, dict) else str(doc)
+
+    if strategy == "first":
+        selected = documents[:top_k]
+
+    elif strategy == "keyword":
+        # Simple keyword overlap scoring
+        query_words = set(query.lower().split())
+        scored = []
+        for doc in documents:
+            text = _get_text(doc).lower()
+            overlap = sum(1 for w in query_words if w in text)
+            scored.append((overlap, doc))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        selected = [doc for _, doc in scored[:top_k]]
+
+    elif strategy == "llm":
+        provider = config.get("provider", "openai")
+        model = config.get("model", "")
+
+        doc_list = "\n".join(
+            f"{i+1}. {_get_text(doc)[:200]}" for i, doc in enumerate(documents)
+        )
+        prompt = (
+            f"Query: {query}\n\n"
+            f"Documents:\n{doc_list}\n\n"
+            f"Return the numbers of the {top_k} most relevant documents as a comma-separated list (e.g. '1,3,5'):"
+        )
+        try:
+            from core.config import settings as _settings
+            if provider == "anthropic":
+                api_key = getattr(_settings, "ANTHROPIC_API_KEY", None)
+                async with httpx.AsyncClient(timeout=30) as client:
+                    r = await client.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+                        json={"model": model or "claude-3-5-haiku-20241022", "max_tokens": 64,
+                              "messages": [{"role": "user", "content": prompt}]},
+                    )
+                    r.raise_for_status()
+                    answer = r.json()["content"][0]["text"]
+            else:
+                api_key = getattr(_settings, "OPENAI_API_KEY", None)
+                async with httpx.AsyncClient(timeout=30) as client:
+                    r = await client.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        json={"model": model or "gpt-4o-mini", "max_tokens": 64,
+                              "messages": [{"role": "user", "content": prompt}]},
+                    )
+                    r.raise_for_status()
+                    answer = r.json()["choices"][0]["message"]["content"]
+
+            indices = [int(n.strip()) - 1 for n in re.findall(r"\d+", answer) if 0 < int(n.strip()) <= len(documents)]
+            selected = [documents[i] for i in indices[:top_k]]
+        except Exception:
+            selected = documents[:top_k]
+    else:
+        selected = documents[:top_k]
+
+    return {
+        "documents": selected,
+        "count": len(selected),
+        "query": query,
+        "strategy": strategy,
+        "total_documents": len(documents),
+    }

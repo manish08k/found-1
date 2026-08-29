@@ -471,3 +471,200 @@ async def memory_clear_node(config: dict, input_data: dict, credential_id: str |
     count = len(_SESSIONS[session_id])
     _SESSIONS[session_id].clear()
     return {"cleared": count, "session_id": session_id}
+
+
+# ─── memory.agent ────────────────────────────────────────────────────────────
+
+@register_node("memory.agent")
+async def memory_agent(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Agent Memory: stores and retrieves multi-turn conversation history for agents.
+    Provides an agent-optimized interface with system message injection.
+
+    config:
+      - operation: get | add | clear | get_with_system (default: get)
+      - session_id: unique conversation identifier
+      - role: message role (user/assistant/system) — for add
+      - content: message content — for add
+      - system_prompt: system prompt to prepend — for get_with_system
+      - k: max history messages to retrieve (default: 20)
+    """
+    session_id = str(input_data.get("session_id") or config.get("session_id", "default"))
+    operation = config.get("operation", input_data.get("operation", "get"))
+    k = int(config.get("k", 20))
+
+    if operation in ("get", "get_with_system"):
+        msgs = _SESSIONS[session_id][-k:]
+        result = {"messages": msgs, "session_id": session_id, "count": len(msgs)}
+
+        if operation == "get_with_system":
+            system_prompt = config.get("system_prompt", "You are a helpful assistant.")
+            full_messages = [{"role": "system", "content": system_prompt}] + msgs
+            result["full_messages"] = full_messages
+
+        return result
+
+    elif operation == "add":
+        role = config.get("role", input_data.get("role", "user"))
+        content = input_data.get("content") or config.get("content", "")
+        _SESSIONS[session_id].append({"role": role, "content": content, "ts": int(time.time())})
+        return {"added": True, "session_id": session_id, "role": role, "count": len(_SESSIONS[session_id])}
+
+    elif operation == "clear":
+        count = len(_SESSIONS[session_id])
+        _SESSIONS[session_id].clear()
+        return {"cleared": count, "session_id": session_id}
+
+    return {"error": f"Unknown operation: {operation}"}
+
+
+# ─── memory.mem0 ─────────────────────────────────────────────────────────────
+
+@register_node("memory.mem0")
+async def memory_mem0(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Mem0 Memory: persistent, AI-powered memory using the Mem0 cloud service.
+    Mem0 automatically extracts and stores relevant facts from conversations.
+
+    config:
+      - operation: add | search | get_all | delete (default: search)
+      - user_id: user identifier for memory isolation
+      - messages: list of {role, content} messages to add — for add
+      - query: search query — for search
+      - memory_id: memory ID — for delete
+    """
+    from core.config import settings
+
+    api_key = getattr(settings, "MEM0_API_KEY", None)
+    if not api_key:
+        raise ValueError("memory.mem0 requires MEM0_API_KEY")
+
+    operation = config.get("operation", input_data.get("operation", "search"))
+    user_id = config.get("user_id") or input_data.get("user_id", "default")
+    headers = {"Authorization": f"Token {api_key}", "Content-Type": "application/json"}
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        if operation == "add":
+            messages = config.get("messages") or input_data.get("messages", [])
+            if not messages:
+                # Build from single content
+                content = input_data.get("content") or config.get("content", "")
+                role = input_data.get("role", "user")
+                messages = [{"role": role, "content": content}]
+            r = await client.post(
+                "https://api.mem0.ai/v1/memories/",
+                json={"messages": messages, "user_id": user_id},
+                headers=headers,
+            )
+            r.raise_for_status()
+            return {"added": True, "memories": r.json(), "user_id": user_id}
+
+        elif operation == "search":
+            query = config.get("query") or input_data.get("query") or input_data.get("input", "")
+            r = await client.post(
+                "https://api.mem0.ai/v1/memories/search/",
+                json={"query": query, "user_id": user_id},
+                headers=headers,
+            )
+            r.raise_for_status()
+            results = r.json()
+            return {"memories": results, "query": query, "user_id": user_id, "count": len(results)}
+
+        elif operation == "get_all":
+            r = await client.get(
+                "https://api.mem0.ai/v1/memories/",
+                params={"user_id": user_id},
+                headers=headers,
+            )
+            r.raise_for_status()
+            memories = r.json()
+            return {"memories": memories, "user_id": user_id, "count": len(memories)}
+
+        elif operation == "delete":
+            memory_id = config.get("memory_id") or input_data.get("memory_id", "")
+            r = await client.delete(f"https://api.mem0.ai/v1/memories/{memory_id}/", headers=headers)
+            r.raise_for_status()
+            return {"deleted": True, "memory_id": memory_id}
+
+    return {"error": f"Unknown operation: {operation}"}
+
+
+# ─── memory.zep_cloud ────────────────────────────────────────────────────────
+
+@register_node("memory.zep_cloud")
+async def memory_zep_cloud(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Zep Cloud Memory: persistent conversational memory using Zep Cloud.
+    Zep provides semantic search, entity extraction, and memory synthesis.
+
+    config:
+      - operation: add | get | search | delete_session (default: get)
+      - session_id: Zep session identifier
+      - role: message role — for add
+      - content: message content — for add
+      - query: search query — for search
+      - limit: max results (default: 10)
+    """
+    from core.config import settings
+
+    api_key = getattr(settings, "ZEP_CLOUD_API_KEY", None)
+    if not api_key:
+        raise ValueError("memory.zep_cloud requires ZEP_CLOUD_API_KEY")
+
+    session_id = str(input_data.get("session_id") or config.get("session_id", "default"))
+    operation = config.get("operation", input_data.get("operation", "get"))
+    headers = {"Authorization": f"Api-Key {api_key}", "Content-Type": "application/json"}
+    base_url = "https://api.getzep.com/api/v2"
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        if operation == "add":
+            role = config.get("role", input_data.get("role", "user"))
+            content = input_data.get("content") or config.get("content", "")
+            role_type = "user" if role == "user" else "assistant"
+            r = await client.post(
+                f"{base_url}/sessions/{session_id}/messages",
+                json={"messages": [{"role": role_type, "role_label": role, "content": content}]},
+                headers=headers,
+            )
+            if r.status_code == 404:
+                # Create session first
+                await client.post(f"{base_url}/sessions", json={"session_id": session_id}, headers=headers)
+                r = await client.post(
+                    f"{base_url}/sessions/{session_id}/messages",
+                    json={"messages": [{"role": role_type, "role_label": role, "content": content}]},
+                    headers=headers,
+                )
+            r.raise_for_status()
+            return {"added": True, "session_id": session_id}
+
+        elif operation == "get":
+            limit = int(config.get("limit", 10))
+            r = await client.get(
+                f"{base_url}/sessions/{session_id}/memory",
+                params={"lastn": limit},
+                headers=headers,
+            )
+            if r.status_code == 404:
+                return {"messages": [], "session_id": session_id, "count": 0}
+            r.raise_for_status()
+            data = r.json()
+            messages = data.get("messages", [])
+            return {"messages": messages, "session_id": session_id, "count": len(messages), "summary": data.get("summary")}
+
+        elif operation == "search":
+            query = config.get("query") or input_data.get("query") or input_data.get("input", "")
+            limit = int(config.get("limit", 10))
+            r = await client.post(
+                f"{base_url}/sessions/{session_id}/search",
+                json={"text": query, "limit": limit},
+                headers=headers,
+            )
+            r.raise_for_status()
+            results = r.json().get("results", [])
+            return {"results": results, "query": query, "session_id": session_id, "count": len(results)}
+
+        elif operation == "delete_session":
+            r = await client.delete(f"{base_url}/sessions/{session_id}", headers=headers)
+            return {"deleted": r.status_code in (200, 204), "session_id": session_id}
+
+    return {"error": f"Unknown operation: {operation}"}

@@ -588,3 +588,179 @@ async def chain_summarization(config: dict, input_data: dict, credential_id: str
         return {"text": current_summary, "method": "refine", "document_count": len(documents)}
 
     return {"text": "Unknown chain_type. Use: stuff, map_reduce, or refine."}
+
+
+# ─── chain.multi_retrieval_qa ────────────────────────────────────────────────
+
+@register_node("chain.multi_retrieval_qa")
+async def chain_multi_retrieval_qa(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    MultiRetrievalQA Chain: routes a query to the most relevant retriever from a
+    set of named retrievers, then synthesizes an answer.
+
+    config:
+      - retrievers: list of {name, description, collection, node_id} dicts
+      - query: the user question
+      - provider: openai | anthropic (default: openai)
+      - model: LLM model for routing + synthesis
+      - max_tokens: max answer tokens (default: 1024)
+      - top_k: documents to retrieve per retriever (default: 4)
+    """
+    from core.execution_engine import NODE_HANDLERS
+
+    query = (
+        config.get("query") or config.get("input") or
+        input_data.get("query") or input_data.get("input", "")
+    )
+    if not query:
+        raise ValueError("chain.multi_retrieval_qa requires 'query'")
+
+    retrievers_cfg = config.get("retrievers", [])
+    provider = config.get("provider", "openai")
+    model = config.get("model", "")
+    max_tokens = int(config.get("max_tokens", 1024))
+    top_k = int(config.get("top_k", 4))
+
+    if not retrievers_cfg:
+        return {"answer": "No retrievers configured.", "query": query, "retriever_used": None}
+
+    # Step 1: Route — choose best retriever using LLM
+    retriever_descriptions = "\n".join(
+        f"{i+1}. {r.get('name', f'retriever_{i}')}: {r.get('description', 'No description')}"
+        for i, r in enumerate(retrievers_cfg)
+    )
+    routing_prompt = (
+        f"Given the question: '{query}'\n\n"
+        f"Choose the most relevant retriever:\n{retriever_descriptions}\n\n"
+        f"Reply with ONLY the number of the best retriever (e.g. '1' or '2'):"
+    )
+    chosen_idx = 0
+    try:
+        routing_answer = await _llm_call(provider, model, [{"role": "user", "content": routing_prompt}], 0, 16)
+        import re as _re
+        nums = _re.findall(r"\d+", routing_answer.strip())
+        if nums:
+            chosen_idx = max(0, min(int(nums[0]) - 1, len(retrievers_cfg) - 1))
+    except Exception:
+        pass
+
+    chosen_retriever = retrievers_cfg[chosen_idx]
+    retriever_node_id = chosen_retriever.get("node_id", "retriever.vector_store")
+    retriever_config = {
+        "collection": chosen_retriever.get("collection", ""),
+        "query": query,
+        "top_k": top_k,
+        **chosen_retriever.get("config", {}),
+    }
+
+    handler = NODE_HANDLERS.get(retriever_node_id)
+    if not handler:
+        return {"error": f"Retriever node '{retriever_node_id}' not registered", "query": query}
+
+    retriever_result = await handler(retriever_config, input_data, credential_id, db)
+    documents = retriever_result.get("documents", [])
+
+    # Step 2: Synthesize answer
+    context_parts = []
+    for i, doc in enumerate(documents):
+        text = doc.get("content", doc.get("text", str(doc))) if isinstance(doc, dict) else str(doc)
+        context_parts.append(f"[{i+1}]: {text[:1000]}")
+    context_str = "\n\n".join(context_parts)
+
+    if not context_str:
+        return {
+            "answer": "No relevant documents found.",
+            "query": query,
+            "retriever_used": chosen_retriever.get("name"),
+            "documents": documents,
+        }
+
+    synthesis_prompt = (
+        f"Context:\n{context_str}\n\n"
+        f"Question: {query}\n\nAnswer based on the context:"
+    )
+    answer = await _llm_call(provider, model, [{"role": "user", "content": synthesis_prompt}], 0.2, max_tokens)
+
+    return {
+        "answer": answer.strip(),
+        "query": query,
+        "retriever_used": chosen_retriever.get("name"),
+        "retriever_node_id": retriever_node_id,
+        "documents": documents,
+        "documents_used": len(documents),
+    }
+
+
+# ─── chain.vectara_qa ────────────────────────────────────────────────────────
+
+@register_node("chain.vectara_qa")
+async def chain_vectara_qa(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    VectaraQA Chain: uses Vectara's built-in RAG pipeline for question answering.
+    Combines Vectara's hybrid search + summarization in a single API call.
+
+    config:
+      - query: user question
+      - corpus_id: Vectara corpus ID (or use VECTARA_CORPUS_ID env)
+      - num_results: documents to retrieve (default: 5)
+      - response_language: language for response (default: eng)
+      - summarizer_prompt: Vectara summarizer prompt name (default: vectara-summary-ext-24-05-sml)
+    """
+    from core.config import settings
+
+    api_key = getattr(settings, "VECTARA_API_KEY", None)
+    corpus_id = config.get("corpus_id") or getattr(settings, "VECTARA_CORPUS_ID", None)
+
+    if not api_key:
+        raise ValueError("chain.vectara_qa requires VECTARA_API_KEY")
+    if not corpus_id:
+        raise ValueError("chain.vectara_qa requires VECTARA_CORPUS_ID or corpus_id in config")
+
+    query = (
+        config.get("query") or config.get("input") or
+        input_data.get("query") or input_data.get("input", "")
+    )
+    if not query:
+        raise ValueError("chain.vectara_qa requires 'query'")
+
+    num_results = int(config.get("num_results", 5))
+    response_language = config.get("response_language", "eng")
+    summarizer_prompt = config.get("summarizer_prompt", "vectara-summary-ext-24-05-sml")
+
+    payload = {
+        "query": query,
+        "search": {
+            "corpora": [{"corpus_key": str(corpus_id)}],
+            "offset": 0,
+            "limit": num_results,
+        },
+        "generation": {
+            "prompt_name": summarizer_prompt,
+            "max_used_search_results": num_results,
+            "response_language": response_language,
+        },
+    }
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            "https://api.vectara.io/v2/query",
+            json=payload,
+            headers={
+                "x-api-key": api_key,
+                "Content-Type": "application/json",
+            },
+        )
+        r.raise_for_status()
+        data = r.json()
+
+    answer = data.get("summary", "")
+    search_results = data.get("search_results", [])
+
+    return {
+        "answer": answer,
+        "query": query,
+        "corpus_id": corpus_id,
+        "documents": search_results,
+        "documents_used": len(search_results),
+        "provider": "vectara",
+    }

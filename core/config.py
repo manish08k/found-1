@@ -242,6 +242,66 @@ class Settings(BaseSettings):
     JIRA_BASE_URL: str = ""
     JIRA_EMAIL: str = ""
     JIRA_API_TOKEN: str = ""
+    APIFY_API_KEY: str = ""
+    FIGMA_ACCESS_TOKEN: str = ""
+    OXYLABS_USERNAME: str = ""
+    OXYLABS_PASSWORD: str = ""
+    SEARCHAPI_API_KEY: str = ""
+    SPIDER_API_KEY: str = ""
+    UNSTRUCTURED_API_KEY: str = ""
+
+    # ── Extended LLM providers (new) ──────────────────────────────────
+    ALIBABA_API_KEY: str = ""
+    BAIDU_API_KEY: str = ""
+    BAIDU_SECRET_KEY: str = ""
+    CLOUDFLARE_API_KEY: str = ""
+    CLOUDFLARE_ACCOUNT_ID: str = ""
+    COMET_API_KEY: str = ""
+    VERTEX_AI_API_KEY: str = ""
+    GOOGLE_CLOUD_PROJECT_ID: str = ""
+    IBM_WATSONX_API_KEY: str = ""
+    IBM_WATSONX_PROJECT_ID: str = ""
+    IBM_WATSONX_URL: str = "https://us-south.ml.cloud.ibm.com"
+    NEMO_GUARDRAILS_CONFIG_PATH: str = ""
+    NVIDIA_API_KEY: str = ""
+    OPENAI_CUSTOM_BASE_URL: str = ""
+    OPENAI_CUSTOM_API_KEY: str = ""
+
+    # ── Extended vector stores ────────────────────────────────────────
+    ASTRA_DB_APPLICATION_TOKEN: str = ""
+    ASTRA_DB_ENDPOINT: str = ""
+    COUCHBASE_CONNECTION_STRING: str = ""
+    COUCHBASE_USERNAME: str = ""
+    COUCHBASE_PASSWORD: str = ""
+    KENDRA_INDEX_ID: str = ""
+    MEILISEARCH_URL: str = "http://localhost:7700"
+    MEILISEARCH_API_KEY: str = ""
+    REDIS_VS_URL: str = ""  # Redis Stack for vector search (may differ from cache REDIS_URL)
+    SINGLESTORE_URL: str = ""
+    SINGLESTORE_API_KEY: str = ""
+    VECTARA_API_KEY: str = ""
+    VECTARA_CORPUS_ID: str = ""
+    ZEP_CLOUD_API_KEY: str = ""
+
+    # ── Memory backends (new) ─────────────────────────────────────────
+    MEM0_API_KEY: str = ""
+
+    # ── Tool integrations (new) ───────────────────────────────────────
+    COMPOSIO_API_KEY: str = ""
+    GMAIL_CLIENT_ID: str = ""
+    GMAIL_CLIENT_SECRET: str = ""
+    GMAIL_REFRESH_TOKEN: str = ""
+    GOOGLE_CALENDAR_REFRESH_TOKEN: str = ""
+    GOOGLE_OAUTH_REFRESH_TOKEN: str = ""
+    MICROSOFT_CLIENT_ID: str = ""
+    MICROSOFT_CLIENT_SECRET: str = ""
+    MICROSOFT_REFRESH_TOKEN: str = ""
+
+    # ── AWS extended ──────────────────────────────────────────────────
+    BEDROCK_KNOWLEDGE_BASE_ID: str = ""
+    AZURE_SEARCH_ENDPOINT: str = ""
+    AZURE_SEARCH_KEY: str = ""
+    AZURE_SEARCH_INDEX: str = ""
 
     # ── Monitoring ────────────────────────────────────────────────────
     PROMETHEUS_ENABLED: bool = True

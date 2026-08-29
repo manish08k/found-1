@@ -783,3 +783,354 @@ async def agent_conversational_retrieval(config: dict, input_data: dict, credent
         "history_length": len(history),
         "provider": provider,
     }
+
+
+# ─── Tool Agent (LangChain-style) ─────────────────────────────────────────────
+
+@register_node("agent.tool_agent")
+async def agent_tool_agent(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    ToolAgent: OpenAI-compatible tool-use agent that receives a list of tools
+    and autonomously selects and invokes them to complete the task. Similar to
+    Flowise's ToolAgent which uses function-calling under the hood.
+
+    config:
+      - model: LLM model (default: gpt-4o-mini)
+      - tools: list of tool node IDs (e.g. ["tool.calculator", "tool.brave_search"])
+      - system_prompt: custom system instructions
+      - input/prompt: user task
+      - max_iterations: max tool call rounds (default 10)
+      - provider: openai (default) or anthropic
+    """
+    from core.execution_engine import NODE_HANDLERS
+    from integrations.ai.handler import _pick_provider
+
+    provider = _pick_provider(config)
+    model = config.get("model", "gpt-4o-mini")
+    task = _render(config.get("input") or config.get("prompt", ""), input_data)
+    tool_ids = config.get("tools") or []
+    max_iter = min(int(config.get("max_iterations", 10)), MAX_ITERATIONS)
+    system_prompt = config.get("system_prompt", "You are a helpful assistant with access to tools. Use them to complete the task.")
+
+    if not task:
+        raise ValueError("agent.tool_agent requires 'input' or 'prompt'")
+
+    # Build tool schemas for function calling
+    tool_schemas = [
+        {
+            "type": "function",
+            "function": {
+                "name": tid.replace(".", "_"),
+                "description": f"Execute the {tid} tool",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "kwargs": {
+                            "type": "object",
+                            "description": "Input parameters for the tool as key-value pairs",
+                        }
+                    },
+                },
+            },
+        }
+        for tid in tool_ids
+        if tid in NODE_HANDLERS
+    ]
+
+    if provider == "anthropic":
+        # Use Anthropic tool use
+        api_key = settings.ANTHROPIC_API_KEY
+        if not api_key:
+            raise ValueError("agent.tool_agent with anthropic provider requires ANTHROPIC_API_KEY")
+
+        anthropic_tools = [
+            {
+                "name": s["function"]["name"],
+                "description": s["function"]["description"],
+                "input_schema": s["function"]["parameters"],
+            }
+            for s in tool_schemas
+        ]
+
+        messages = [{"role": "user", "content": task}]
+        tool_calls_log = []
+        iterations = 0
+        final_text = ""
+
+        while iterations < max_iter:
+            async with httpx.AsyncClient(timeout=120) as client:
+                payload = {
+                    "model": model or "claude-3-5-haiku-20241022",
+                    "max_tokens": int(config.get("max_tokens", 4096)),
+                    "system": system_prompt,
+                    "messages": messages,
+                }
+                if anthropic_tools:
+                    payload["tools"] = anthropic_tools
+
+                r = await client.post(
+                    ANTHROPIC_API_URL,
+                    json=payload,
+                    headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+                )
+                r.raise_for_status()
+                data = r.json()
+
+            stop_reason = data.get("stop_reason")
+            content_blocks = data.get("content", [])
+            messages.append({"role": "assistant", "content": content_blocks})
+            iterations += 1
+
+            if stop_reason == "end_turn":
+                for block in content_blocks:
+                    if block.get("type") == "text":
+                        final_text = block["text"]
+                break
+
+            if stop_reason == "tool_use":
+                tool_results = []
+                for block in content_blocks:
+                    if block.get("type") == "tool_use":
+                        tool_name = block["name"]
+                        tool_input = block.get("input", {})
+                        tool_id = tool_name.replace("_", ".", 1)
+                        tool_kwargs = tool_input.get("kwargs", tool_input)
+
+                        if tool_id in NODE_HANDLERS:
+                            try:
+                                result = await NODE_HANDLERS[tool_id](tool_kwargs, tool_kwargs, credential_id, db)
+                            except Exception as e:
+                                result = {"error": str(e)}
+                        else:
+                            result = {"error": f"Unknown tool: {tool_id}"}
+
+                        tool_calls_log.append({"tool": tool_id, "input": tool_kwargs, "result": result})
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block["id"],
+                            "content": json.dumps(result),
+                        })
+
+                messages.append({"role": "user", "content": tool_results})
+            else:
+                for block in content_blocks:
+                    if block.get("type") == "text":
+                        final_text = block["text"]
+                break
+
+        return {
+            "answer": final_text,
+            "tool_calls": tool_calls_log,
+            "iterations": iterations,
+            "provider": "anthropic",
+            "model": model,
+        }
+
+    else:
+        # OpenAI-compatible function calling
+        api_key = settings.OPENAI_API_KEY
+        if not api_key:
+            raise ValueError("agent.tool_agent requires OPENAI_API_KEY (or set provider=anthropic)")
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": task},
+        ]
+        tool_calls_log = []
+        iterations = 0
+        final_text = ""
+
+        async with httpx.AsyncClient(timeout=120) as client:
+            while iterations < max_iter:
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                }
+                if tool_schemas:
+                    payload["tools"] = tool_schemas
+                    payload["tool_choice"] = "auto"
+
+                r = await client.post(
+                    OPENAI_API_URL,
+                    json=payload,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+                r.raise_for_status()
+                data = r.json()
+
+                choice = data["choices"][0]
+                msg = choice["message"]
+                messages.append(msg)
+                iterations += 1
+
+                if choice["finish_reason"] in ("stop", "length"):
+                    final_text = msg.get("content", "")
+                    break
+
+                if msg.get("tool_calls"):
+                    for tc in msg["tool_calls"]:
+                        fn_name = tc["function"]["name"]
+                        fn_args = json.loads(tc["function"]["arguments"])
+                        tool_id = fn_name.replace("_", ".", 1)
+                        tool_kwargs = fn_args.get("kwargs", fn_args)
+
+                        if tool_id in NODE_HANDLERS:
+                            try:
+                                result = await NODE_HANDLERS[tool_id](tool_kwargs, tool_kwargs, credential_id, db)
+                            except Exception as e:
+                                result = {"error": str(e)}
+                        else:
+                            result = {"error": f"Unknown tool: {tool_id}"}
+
+                        tool_calls_log.append({"tool": tool_id, "input": tool_kwargs, "result": result})
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": json.dumps(result),
+                        })
+                else:
+                    final_text = msg.get("content", "")
+                    break
+
+        return {
+            "answer": final_text,
+            "tool_calls": tool_calls_log,
+            "iterations": iterations,
+            "provider": "openai",
+            "model": model,
+        }
+
+
+# ─── LlamaIndex-style Agents ──────────────────────────────────────────────────
+
+@register_node("agent.llamaindex")
+async def agent_llamaindex(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    LlamaIndex-compatible agent using our vector store + LLM infrastructure.
+    Implements ReAct with retrieval tools, analogous to LlamaIndex's OpenAIAgent.
+
+    config:
+      - model: LLM model
+      - collections: list of vector store collections to query (as tools)
+      - vectorstore_type: inmemory | faiss | chroma | pinecone | qdrant | weaviate
+      - top_k: documents to retrieve per query (default 4)
+      - tools: additional tool node IDs
+      - input/query: user query
+      - max_iterations: max reasoning steps
+    """
+    from core.execution_engine import NODE_HANDLERS
+    from integrations.ai.handler import _pick_provider, _call_openai, _call_anthropic
+
+    provider = _pick_provider(config)
+    model = config.get("model", "")
+    query = _render(config.get("input") or config.get("query") or config.get("prompt", ""), input_data)
+    collections = config.get("collections") or []
+    vs_type = config.get("vectorstore_type", "inmemory")
+    top_k = int(config.get("top_k", 4))
+    tool_ids = list(config.get("tools") or [])
+    max_iter = min(int(config.get("max_iterations", 8)), MAX_ITERATIONS)
+
+    if not query:
+        raise ValueError("agent.llamaindex requires 'input', 'query', or 'prompt'")
+
+    # Build retrieval tools from collections
+    async def retrieve_from_collection(coll: str, q: str) -> str:
+        query_node = f"vectorstore.{vs_type}.query"
+        if query_node in NODE_HANDLERS:
+            try:
+                result = await NODE_HANDLERS[query_node](
+                    {"collection": coll, "query": q, "top_k": top_k},
+                    {"query": q},
+                    credential_id,
+                    db,
+                )
+                docs = result.get("results", [])
+                return "\n\n".join(d.get("content", d.get("text", str(d))) for d in docs)
+            except Exception as e:
+                return f"[Retrieval error from {coll}: {e}]"
+        return f"[Vector store {vs_type} not available]"
+
+    # Initial context retrieval
+    context_parts = []
+    for coll in collections:
+        retrieved = await retrieve_from_collection(coll, query)
+        if retrieved:
+            context_parts.append(f"[Context from {coll}]:\n{retrieved}")
+
+    context_str = "\n\n".join(context_parts) if context_parts else ""
+
+    # Tool list for agent
+    all_tool_ids = [f"vectorstore.{vs_type}.query:{c}" for c in collections] + list(tool_ids)
+    tool_desc_lines = [f"- retrieve:{c}: Search the '{c}' knowledge base" for c in collections]
+    tool_desc_lines += [f"- {t}: available tool" for t in tool_ids if t in NODE_HANDLERS]
+    tools_str = "\n".join(tool_desc_lines) if tool_desc_lines else "No tools available."
+
+    system = config.get("system_prompt") or (
+        "You are a knowledgeable assistant with access to retrieval tools.\n"
+        "Use the provided context and tools to answer questions accurately.\n\n"
+        f"Available tools:\n{tools_str}"
+    )
+
+    initial_prompt = (
+        f"{('Context:\n' + context_str + chr(10) + chr(10)) if context_str else ''}"
+        f"Question: {query}\n\nLet's think step by step:"
+    )
+
+    thoughts = []
+    final_answer = None
+    running_context = initial_prompt
+
+    for iteration in range(max_iter):
+        if provider == "anthropic":
+            response = await _call_anthropic(model, system, running_context, 2048, 0.1)
+        else:
+            response = await _call_openai(model, system, running_context, 2048, 0.1)
+
+        thoughts.append(response)
+
+        if "Final Answer:" in response:
+            final_answer = response.split("Final Answer:")[-1].strip()
+            break
+
+        # Check for retrieval action
+        retrieve_match = re.search(r"Action:\s*retrieve:([^\n]+)", response)
+        if retrieve_match:
+            coll = retrieve_match.group(1).strip()
+            q_match = re.search(r"Action Input:\s*([^\n]+)", response)
+            sub_query = q_match.group(1).strip() if q_match else query
+            retrieved = await retrieve_from_collection(coll, sub_query)
+            running_context = f"{running_context}\n{response}\nObservation: {retrieved[:2000]}"
+            continue
+
+        # Check for tool action
+        action_match = re.search(r"Action:\s*([^\n]+)", response)
+        action_input_match = re.search(r"Action Input:\s*(\{.*?\})", response, re.DOTALL)
+        if action_match and action_input_match:
+            tool_id = action_match.group(1).strip()
+            try:
+                tool_input = json.loads(action_input_match.group(1))
+            except Exception:
+                tool_input = {"input": action_input_match.group(1)}
+
+            if tool_id in NODE_HANDLERS:
+                try:
+                    obs = await NODE_HANDLERS[tool_id](tool_input, tool_input, credential_id, db)
+                    obs_str = json.dumps(obs)
+                except Exception as e:
+                    obs_str = f"Error: {e}"
+            else:
+                obs_str = f"Unknown tool: {tool_id}"
+
+            running_context = f"{running_context}\n{response}\nObservation: {obs_str}"
+        else:
+            final_answer = response
+            break
+
+    return {
+        "answer": final_answer or running_context,
+        "thoughts": thoughts,
+        "iterations": len(thoughts),
+        "collections_used": collections,
+        "provider": provider,
+        "model": model,
+    }

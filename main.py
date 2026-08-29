@@ -79,6 +79,13 @@ import integrations.speechtotext.handler
 import integrations.graphs.handler
 import integrations.recordmanager.handler
 import integrations.embeddings.handler
+# New Flowise parity integrations
+import integrations.agentflow.handler
+import integrations.engine.handler
+import integrations.moderation.handler
+import integrations.responsesynthesizer.handler
+import integrations.sequentialagents.handler
+import integrations.utilities.handler
 
 log = structlog.get_logger(__name__)
 

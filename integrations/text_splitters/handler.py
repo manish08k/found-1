@@ -353,3 +353,134 @@ async def splitter_sentence(config: dict, input_data: dict, credential_id: str, 
         chunks = split_sentences(text)
         docs = [{"text": c, "metadata": {"chunk_index": i}} for i, c in enumerate(chunks)]
         return {"documents": docs, "count": len(docs), "chunks": chunks}
+
+
+# ─── HTML to Markdown Text Splitter ──────────────────────────────────────────
+
+@register_node("splitter.html_to_markdown")
+async def splitter_html_to_markdown(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """
+    Convert HTML content to Markdown, then split at Markdown header boundaries.
+    Useful for loading HTML pages and splitting for RAG ingestion.
+    
+    config:
+      - text/html: HTML content (or pass via input_data)
+      - chunk_size: max characters per chunk (default 1000)
+      - chunk_overlap: overlap between chunks (default 200)
+      - header_levels: list of header levels to split on (default [1, 2, 3])
+      - strip_tags: remove all HTML tags without converting (default False)
+    """
+    import re
+
+    html = config.get("html") or config.get("text") or input_data.get("html") or input_data.get("text", "")
+    documents = config.get("documents") or input_data.get("documents")
+    chunk_size = int(config.get("chunk_size", 1000))
+    chunk_overlap = int(config.get("chunk_overlap", 200))
+    header_levels = config.get("header_levels", [1, 2, 3])
+    strip_only = config.get("strip_tags", False)
+
+    def html_to_markdown(h: str) -> str:
+        """Convert basic HTML tags to Markdown equivalents."""
+        if strip_only:
+            return re.sub(r"<[^>]+>", "", h)
+
+        # Try html2text if available
+        try:
+            import html2text
+            converter = html2text.HTML2Text()
+            converter.ignore_links = False
+            converter.ignore_images = True
+            converter.body_width = 0
+            return converter.handle(h)
+        except ImportError:
+            pass
+
+        # Fallback: manual conversion of common tags
+        text = h
+        # Headers
+        for lvl in range(6, 0, -1):
+            text = re.sub(
+                rf"<h{lvl}[^>]*>(.*?)</h{lvl}>",
+                lambda m, l=lvl: "\n" + "#" * l + " " + re.sub(r"<[^>]+>", "", m.group(1)).strip() + "\n",
+                text, flags=re.IGNORECASE | re.DOTALL,
+            )
+        # Bold / strong
+        text = re.sub(r"<(b|strong)[^>]*>(.*?)</(b|strong)>", r"**\2**", text, flags=re.IGNORECASE | re.DOTALL)
+        # Italic / em
+        text = re.sub(r"<(i|em)[^>]*>(.*?)</(i|em)>", r"*\2*", text, flags=re.IGNORECASE | re.DOTALL)
+        # Links
+        text = re.sub(r'<a[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', r"[\2](\1)", text, flags=re.IGNORECASE | re.DOTALL)
+        # Paragraphs and line breaks
+        text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"<p[^>]*>", "\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"</p>", "\n", text, flags=re.IGNORECASE)
+        # List items
+        text = re.sub(r"<li[^>]*>(.*?)</li>", r"- \1\n", text, flags=re.IGNORECASE | re.DOTALL)
+        # Strip remaining tags
+        text = re.sub(r"<[^>]+>", "", text)
+        # Decode common HTML entities
+        text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+        text = text.replace("&nbsp;", " ").replace("&quot;", '"').replace("&#39;", "'")
+        # Collapse multiple blank lines
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    def split_markdown_chunks(md: str, meta: dict) -> list[dict]:
+        """Split markdown at headers, then further split large sections."""
+        header_re = re.compile(r"(?m)^(#{1,6}) (.+)$")
+        lines = md.split("\n")
+        sections: list[dict] = []
+        current_headers: dict = {}
+        current_lines: list[str] = []
+
+        for line in lines:
+            m = header_re.match(line)
+            if m and len(m.group(1)) in header_levels:
+                if current_lines:
+                    text_chunk = "\n".join(current_lines).strip()
+                    if text_chunk:
+                        sections.append({"text": text_chunk, "headers": dict(current_headers)})
+                level = len(m.group(1))
+                current_headers[f"h{level}"] = m.group(2)
+                for lvl in range(level + 1, 7):
+                    current_headers.pop(f"h{lvl}", None)
+                current_lines = [line]
+            else:
+                current_lines.append(line)
+
+        if current_lines:
+            text_chunk = "\n".join(current_lines).strip()
+            if text_chunk:
+                sections.append({"text": text_chunk, "headers": dict(current_headers)})
+
+        # Further split large sections
+        result = []
+        for sec in sections:
+            t = sec["text"]
+            if len(t) <= chunk_size:
+                result.append({"text": t, "metadata": {**meta, **sec["headers"]}})
+            else:
+                start = 0
+                while start < len(t):
+                    end = start + chunk_size
+                    result.append({"text": t[start:end], "metadata": {**meta, **sec["headers"]}})
+                    start += chunk_size - chunk_overlap
+        return result
+
+    if documents:
+        all_docs = []
+        for doc in documents:
+            doc_html = doc.get("html") or doc.get("text", "") if isinstance(doc, dict) else str(doc)
+            doc_meta = doc.get("metadata", {}) if isinstance(doc, dict) else {}
+            md = html_to_markdown(doc_html)
+            chunks = split_markdown_chunks(md, doc_meta)
+            for i, chunk in enumerate(chunks):
+                chunk["metadata"]["chunk_index"] = i
+                all_docs.append(chunk)
+        return {"documents": all_docs, "count": len(all_docs)}
+    else:
+        md = html_to_markdown(html)
+        chunks = split_markdown_chunks(md, {})
+        for i, chunk in enumerate(chunks):
+            chunk["metadata"]["chunk_index"] = i
+        return {"documents": chunks, "count": len(chunks), "markdown": md}

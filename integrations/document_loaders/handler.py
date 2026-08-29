@@ -963,3 +963,750 @@ async def loader_gitbook(config: dict, input_data: dict, credential_id: str | No
                                                          "title": title, "path": path}})
 
     return {"documents": docs, "count": len(docs), "source": "gitbook"}
+
+
+# ─── API Document Loader ───────────────────────────────────────────────────────
+
+@register_node("loader.api")
+async def loader_api(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Load documents from a REST API endpoint."""
+    from core.ssrf_guard import assert_safe_url, SSRFSafeTransport
+    url = config.get("url") or input_data.get("url")
+    if not url:
+        raise ValueError("loader.api requires 'url'")
+    assert_safe_url(url)
+    method = config.get("method", "GET").upper()
+    headers = dict(config.get("headers") or {})
+    body = config.get("body") or config.get("params")
+    data_path = config.get("data_path", "")
+    text_field = config.get("text_field", "")
+    metadata_fields = config.get("metadata_fields") or []
+    chunk_size = int(config.get("chunk_size", 0))
+    async with httpx.AsyncClient(timeout=30, transport=SSRFSafeTransport()) as client:
+        if method == "POST":
+            r = await client.post(url, json=body, headers=headers)
+        else:
+            r = await client.get(url, params=body, headers=headers)
+        r.raise_for_status()
+    try:
+        data = r.json()
+    except Exception:
+        data = r.text
+    # Navigate to data_path
+    if data_path and isinstance(data, dict):
+        for key in data_path.split("."):
+            data = data.get(key, data) if isinstance(data, dict) else data
+    items = data if isinstance(data, list) else [data]
+    documents = []
+    for item in items:
+        if isinstance(item, dict):
+            text = str(item.get(text_field, "") if text_field else item)
+            meta = {f: item.get(f) for f in metadata_fields if f in item}
+        else:
+            text = str(item)
+            meta = {}
+        meta["source"] = url
+        if chunk_size > 0:
+            chunks = _chunk_text(text, chunk_size)
+            for i, c in enumerate(chunks):
+                documents.append({"text": c, "metadata": {**meta, "chunk_index": i}})
+        else:
+            documents.append({"text": text, "metadata": meta})
+    return {"documents": documents, "total": len(documents), "source": url}
+
+
+# ─── Apify Website Content Crawler ────────────────────────────────────────────
+
+@register_node("loader.apify_crawler")
+async def loader_apify_crawler(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Load documents by crawling websites via Apify."""
+    api_key = getattr(settings, "APIFY_API_KEY", None)
+    if not api_key:
+        raise ValueError("loader.apify_crawler requires APIFY_API_KEY in environment")
+    url = config.get("url") or input_data.get("url")
+    if not url:
+        raise ValueError("loader.apify_crawler requires 'url'")
+    max_pages = int(config.get("max_pages", 10))
+    chunk_size = int(config.get("chunk_size", 1000))
+    # Start the crawl run
+    async with httpx.AsyncClient(timeout=300) as client:
+        run_resp = await client.post(
+            "https://api.apify.com/v2/acts/apify~website-content-crawler/runs",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"startUrls": [{"url": url}], "maxCrawlingDepth": 1, "maxPagesPerCrawl": max_pages},
+        )
+        run_resp.raise_for_status()
+        run_id = run_resp.json()["data"]["id"]
+        # Poll for completion
+        for _ in range(60):
+            await asyncio.sleep(5)
+            status_resp = await client.get(
+                f"https://api.apify.com/v2/acts/apify~website-content-crawler/runs/{run_id}",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            status_resp.raise_for_status()
+            status = status_resp.json()["data"]["status"]
+            if status in ("SUCCEEDED", "FAILED", "TIMED-OUT", "ABORTED"):
+                break
+        # Fetch dataset items
+        dataset_id = status_resp.json()["data"]["defaultDatasetId"]
+        items_resp = await client.get(
+            f"https://api.apify.com/v2/datasets/{dataset_id}/items",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params={"format": "json", "clean": "true"},
+        )
+        items_resp.raise_for_status()
+        items = items_resp.json()
+    documents = []
+    for item in items:
+        text = item.get("text") or item.get("markdown") or item.get("html") or str(item)
+        meta = {"url": item.get("url", ""), "title": item.get("title", ""), "source": "apify"}
+        if chunk_size > 0:
+            for i, c in enumerate(_chunk_text(text, chunk_size)):
+                documents.append({"text": c, "metadata": {**meta, "chunk_index": i}})
+        else:
+            documents.append({"text": text, "metadata": meta})
+    return {"documents": documents, "total": len(documents), "source": url}
+
+
+# ─── Brave Search as Document Loader ──────────────────────────────────────────
+
+@register_node("loader.brave_search_docs")
+async def loader_brave_search_docs(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Load search results from Brave Search as documents."""
+    api_key = getattr(settings, "BRAVE_SEARCH_API_KEY", None)
+    if not api_key:
+        raise ValueError("loader.brave_search_docs requires BRAVE_SEARCH_API_KEY")
+    query = config.get("query") or input_data.get("query", "")
+    if not query:
+        raise ValueError("loader.brave_search_docs requires 'query'")
+    count = min(int(config.get("count", 10)), 20)
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(
+            "https://api.search.brave.com/res/v1/web/search",
+            headers={"Accept": "application/json", "X-Subscription-Token": api_key},
+            params={"q": query, "count": count},
+        )
+        r.raise_for_status()
+        data = r.json()
+    results = data.get("web", {}).get("results", [])
+    documents = []
+    for item in results:
+        text = f"{item.get('title', '')}\n{item.get('description', '')}"
+        documents.append({
+            "text": text,
+            "metadata": {"url": item.get("url", ""), "title": item.get("title", ""), "source": "brave_search"},
+        })
+    return {"documents": documents, "total": len(documents), "query": query}
+
+
+# ─── Cheerio Web Scraper ──────────────────────────────────────────────────────
+
+@register_node("loader.cheerio")
+async def loader_cheerio(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Scrape a webpage and extract content by CSS selector (Python equivalent)."""
+    from core.ssrf_guard import assert_safe_url, SSRFSafeTransport
+    url = config.get("url") or input_data.get("url")
+    if not url:
+        raise ValueError("loader.cheerio requires 'url'")
+    assert_safe_url(url)
+    selector = config.get("selector", "body")
+    include_links = config.get("include_links", False)
+    chunk_size = int(config.get("chunk_size", 1000))
+    async with httpx.AsyncClient(timeout=30, transport=SSRFSafeTransport(),
+                                  headers={"User-Agent": "Mozilla/5.0 AutoFlow/1.0"}) as client:
+        r = await client.get(url)
+        r.raise_for_status()
+        html = r.text
+    # Parse with html.parser
+    try:
+        from html.parser import HTMLParser
+        import re as _re
+
+        class TextExtractor(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.texts = []
+                self.links = []
+                self._skip = False
+                self._skip_tags = {"script", "style", "head", "meta", "link"}
+                self._current_tag = None
+
+            def handle_starttag(self, tag, attrs):
+                self._current_tag = tag
+                if tag in self._skip_tags:
+                    self._skip = True
+                if include_links and tag == "a":
+                    href = dict(attrs).get("href", "")
+                    if href:
+                        self.links.append(href)
+
+            def handle_endtag(self, tag):
+                if tag in self._skip_tags:
+                    self._skip = False
+
+            def handle_data(self, data):
+                if not self._skip and data.strip():
+                    self.texts.append(data.strip())
+
+        parser = TextExtractor()
+        # Simple tag extraction - extract text within the "selector" tag
+        tag_match = _re.search(rf"<{selector.lstrip('#. ')}[^>]*>(.*?)</{selector.lstrip('#. ')}>",
+                               html, _re.DOTALL | _re.IGNORECASE)
+        target_html = tag_match.group(1) if tag_match else html
+        parser.feed(target_html)
+        text = " ".join(parser.texts)
+        if include_links:
+            text += "\n\nLinks: " + ", ".join(parser.links)
+    except Exception:
+        # Fallback: strip all tags
+        import re as _re
+        text = _re.sub(r"<[^>]+>", " ", html)
+        text = _re.sub(r"\s+", " ", text).strip()
+
+    meta = {"url": url, "selector": selector, "source": "cheerio"}
+    documents = []
+    if chunk_size > 0:
+        for i, c in enumerate(_chunk_text(text, chunk_size)):
+            documents.append({"text": c, "metadata": {**meta, "chunk_index": i}})
+    else:
+        documents.append({"text": text, "metadata": meta})
+    return {"documents": documents, "total": len(documents), "source": url}
+
+
+# ─── Custom Document Loader ───────────────────────────────────────────────────
+
+@register_node("loader.custom_document")
+async def loader_custom_document(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Pass-through loader: accepts documents directly as configuration."""
+    documents = (
+        config.get("documents")
+        or input_data.get("documents")
+        or []
+    )
+    # Normalize each document
+    normalized = []
+    for doc in documents:
+        if isinstance(doc, str):
+            normalized.append({"text": doc, "metadata": {}})
+        elif isinstance(doc, dict):
+            text = doc.get("text") or doc.get("content") or str(doc)
+            meta = doc.get("metadata") or {}
+            normalized.append({"text": text, "metadata": meta})
+    return {"documents": normalized, "total": len(normalized), "source": "custom"}
+
+
+# ─── Document Store Loader ────────────────────────────────────────────────────
+
+@register_node("loader.document_store")
+async def loader_document_store(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Load documents from the platform's internal document store."""
+    store_id = config.get("store_id") or input_data.get("store_id")
+    limit = int(config.get("limit", 100))
+    try:
+        from sqlalchemy import select
+        from storage.models import DocumentStore
+        q = select(DocumentStore)
+        if store_id:
+            q = q.where(DocumentStore.id == store_id)
+        q = q.limit(limit)
+        result = await db.execute(q)
+        stores = result.scalars().all()
+        documents = []
+        for store in stores:
+            docs = store.documents if hasattr(store, "documents") else []
+            for doc in (docs if isinstance(docs, list) else []):
+                text = doc.get("text") or doc.get("content", "")
+                meta = doc.get("metadata") or {"store_id": str(store.id)}
+                documents.append({"text": text, "metadata": meta})
+        return {"documents": documents, "total": len(documents), "store_id": store_id}
+    except Exception as e:
+        log.warning("loader_document_store_error", error=str(e))
+        return {"documents": [], "total": 0, "store_id": store_id, "error": str(e)}
+
+
+# ─── Figma File Loader ────────────────────────────────────────────────────────
+
+@register_node("loader.figma")
+async def loader_figma(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Load design data from a Figma file."""
+    api_key = getattr(settings, "FIGMA_ACCESS_TOKEN", None)
+    if not api_key:
+        raise ValueError("loader.figma requires FIGMA_ACCESS_TOKEN in environment")
+    file_key = config.get("file_key") or input_data.get("file_key")
+    if not file_key:
+        raise ValueError("loader.figma requires 'file_key'")
+    node_ids = config.get("node_ids")
+    async with httpx.AsyncClient(timeout=60) as client:
+        params = {}
+        if node_ids:
+            params["ids"] = ",".join(node_ids) if isinstance(node_ids, list) else node_ids
+        r = await client.get(
+            f"https://api.figma.com/v1/files/{file_key}",
+            headers={"X-Figma-Token": api_key},
+            params=params,
+        )
+        r.raise_for_status()
+        data = r.json()
+    documents = []
+
+    def extract_nodes(node, depth=0):
+        if depth > 5:
+            return
+        name = node.get("name", "")
+        node_type = node.get("type", "")
+        text = ""
+        if node_type == "TEXT":
+            text = node.get("characters", "")
+        if text or node_type in ("FRAME", "COMPONENT", "INSTANCE"):
+            desc = f"[{node_type}] {name}"
+            if text:
+                desc += f": {text}"
+            documents.append({
+                "text": desc,
+                "metadata": {"type": node_type, "name": name, "file_key": file_key, "source": "figma"},
+            })
+        for child in node.get("children", []):
+            extract_nodes(child, depth + 1)
+
+    doc = data.get("document", {})
+    extract_nodes(doc)
+    return {"documents": documents, "total": len(documents), "file_key": file_key}
+
+
+# ─── Generic File Loader ──────────────────────────────────────────────────────
+
+@register_node("loader.file")
+async def loader_file(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Load a file by path or base64 content, dispatching to appropriate sub-loader."""
+    import base64, os, tempfile
+    from core.execution_engine import NODE_HANDLERS
+    file_path = config.get("file_path") or input_data.get("file_path")
+    file_content_b64 = config.get("file_content") or input_data.get("file_content")
+    file_type = (config.get("file_type") or "").lower()
+
+    if file_path:
+        ext = os.path.splitext(file_path)[1].lower().lstrip(".")
+        file_type = file_type or ext
+        with open(file_path, "rb") as f:
+            raw = f.read()
+    elif file_content_b64:
+        raw = base64.b64decode(file_content_b64)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_type}") as tmp:
+            tmp.write(raw)
+            file_path = tmp.name
+    else:
+        raise ValueError("loader.file requires 'file_path' or 'file_content' (base64)")
+
+    type_map = {
+        "pdf": "loader.pdf", "txt": "loader.text", "csv": "loader.csv",
+        "json": "loader.json", "jsonl": "loader.jsonlines",
+        "docx": "loader.docx", "doc": "loader.docx",
+        "xlsx": "loader.microsoft_excel", "xls": "loader.microsoft_excel",
+        "pptx": "loader.microsoft_powerpoint", "epub": "loader.epub",
+    }
+    sub_node = type_map.get(file_type)
+    if sub_node and sub_node in NODE_HANDLERS:
+        sub_config = {**config, "file_path": file_path}
+        return await NODE_HANDLERS[sub_node](sub_config, input_data, credential_id, db)
+
+    # Fallback: plain text
+    try:
+        text = raw.decode("utf-8", errors="replace")
+    except Exception:
+        text = str(raw[:10000])
+    return {"documents": [{"text": text, "metadata": {"source": file_path}}], "total": 1}
+
+
+# ─── Microsoft Excel Loader ───────────────────────────────────────────────────
+
+@register_node("loader.microsoft_excel")
+async def loader_microsoft_excel(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Load Excel (.xlsx) files as documents — each row becomes a document."""
+    import base64, io, tempfile, os
+    file_path = config.get("file_path") or input_data.get("file_path")
+    file_content_b64 = config.get("file_content") or input_data.get("file_content")
+    sheet_name = config.get("sheet_name")  # None = all sheets
+    row_as_text = config.get("row_as_text", True)
+
+    try:
+        import openpyxl
+    except ImportError:
+        raise ImportError("loader.microsoft_excel requires openpyxl: pip install openpyxl")
+
+    if file_content_b64:
+        raw = base64.b64decode(file_content_b64)
+        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+    elif file_path:
+        wb = openpyxl.load_workbook(file_path, data_only=True)
+    else:
+        raise ValueError("loader.microsoft_excel requires 'file_path' or 'file_content'")
+
+    sheets = [wb[sheet_name]] if sheet_name else wb.worksheets
+    documents = []
+    for ws in sheets:
+        headers = [str(cell.value or "") for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            row_dict = dict(zip(headers, [str(v) if v is not None else "" for v in row]))
+            text = " | ".join(f"{k}: {v}" for k, v in row_dict.items() if v) if row_as_text else str(row_dict)
+            documents.append({"text": text, "metadata": {"sheet": ws.title, "row": row_dict, "source": file_path or "excel"}})
+    return {"documents": documents, "total": len(documents), "sheets": [ws.title for ws in sheets]}
+
+
+# ─── Microsoft PowerPoint Loader ──────────────────────────────────────────────
+
+@register_node("loader.microsoft_powerpoint")
+async def loader_microsoft_powerpoint(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Load PowerPoint (.pptx) files — each slide becomes a document."""
+    import base64, io
+    file_path = config.get("file_path") or input_data.get("file_path")
+    file_content_b64 = config.get("file_content") or input_data.get("file_content")
+    try:
+        from pptx import Presentation
+    except ImportError:
+        raise ImportError("loader.microsoft_powerpoint requires python-pptx: pip install python-pptx")
+
+    if file_content_b64:
+        raw = base64.b64decode(file_content_b64)
+        prs = Presentation(io.BytesIO(raw))
+    elif file_path:
+        prs = Presentation(file_path)
+    else:
+        raise ValueError("loader.microsoft_powerpoint requires 'file_path' or 'file_content'")
+
+    documents = []
+    for i, slide in enumerate(prs.slides):
+        texts = []
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and shape.text.strip():
+                texts.append(shape.text.strip())
+        text = "\n".join(texts)
+        if text:
+            documents.append({
+                "text": text,
+                "metadata": {"slide": i + 1, "source": file_path or "pptx"},
+            })
+    return {"documents": documents, "total": len(documents), "slides": len(prs.slides)}
+
+
+# ─── Microsoft Word Loader ────────────────────────────────────────────────────
+
+@register_node("loader.microsoft_word")
+async def loader_microsoft_word(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Load Word (.docx) files as documents."""
+    # Alias to loader.docx with enhanced options
+    from core.execution_engine import NODE_HANDLERS
+    if "loader.docx" in NODE_HANDLERS:
+        return await NODE_HANDLERS["loader.docx"](config, input_data, credential_id, db)
+    # Fallback implementation
+    import base64, io
+    file_path = config.get("file_path") or input_data.get("file_path")
+    file_content_b64 = config.get("file_content") or input_data.get("file_content")
+    try:
+        import docx
+    except ImportError:
+        raise ImportError("loader.microsoft_word requires python-docx: pip install python-docx")
+    if file_content_b64:
+        raw = base64.b64decode(file_content_b64)
+        doc = docx.Document(io.BytesIO(raw))
+    elif file_path:
+        doc = docx.Document(file_path)
+    else:
+        raise ValueError("loader.microsoft_word requires 'file_path' or 'file_content'")
+    text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    return {"documents": [{"text": text, "metadata": {"source": file_path or "docx"}}], "total": 1}
+
+
+# ─── Oxylabs Web Scraper Loader ───────────────────────────────────────────────
+
+@register_node("loader.oxylabs")
+async def loader_oxylabs(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Load web content via Oxylabs Realtime API."""
+    username = getattr(settings, "OXYLABS_USERNAME", None)
+    password = getattr(settings, "OXYLABS_PASSWORD", None)
+    if not username or not password:
+        raise ValueError("loader.oxylabs requires OXYLABS_USERNAME and OXYLABS_PASSWORD")
+    url = config.get("url") or input_data.get("url")
+    if not url:
+        raise ValueError("loader.oxylabs requires 'url'")
+    parse = config.get("parse", True)
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            "https://realtime.oxylabs.io/v1/queries",
+            auth=(username, password),
+            json={"source": "universal", "url": url, "parse": parse},
+        )
+        r.raise_for_status()
+        data = r.json()
+    results = data.get("results", [])
+    documents = []
+    for result in results:
+        content = result.get("content") or result.get("parsed", {}).get("text", "") or str(result)
+        documents.append({"text": content, "metadata": {"url": url, "source": "oxylabs"}})
+    return {"documents": documents, "total": len(documents), "source": url}
+
+
+# ─── Playwright Web Scraper ───────────────────────────────────────────────────
+
+@register_node("loader.playwright_web")
+async def loader_playwright_web(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Scrape JS-heavy sites using Playwright (or httpx fallback)."""
+    from core.ssrf_guard import assert_safe_url, SSRFSafeTransport
+    url = config.get("url") or input_data.get("url")
+    if not url:
+        raise ValueError("loader.playwright_web requires 'url'")
+    assert_safe_url(url)
+    chunk_size = int(config.get("chunk_size", 1000))
+    import re as _re
+    try:
+        from playwright.async_api import async_playwright
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.goto(url, timeout=30000)
+            if config.get("wait_for_selector"):
+                await page.wait_for_selector(config["wait_for_selector"], timeout=10000)
+            content = await page.content()
+            await browser.close()
+        text = _re.sub(r"<[^>]+>", " ", content)
+        text = _re.sub(r"\s+", " ", text).strip()
+    except ImportError:
+        # Fallback to httpx
+        async with httpx.AsyncClient(timeout=30, transport=SSRFSafeTransport(),
+                                     headers={"User-Agent": "Mozilla/5.0"}) as client:
+            r = await client.get(url)
+            text = _re.sub(r"<[^>]+>", " ", r.text)
+            text = _re.sub(r"\s+", " ", text).strip()
+    meta = {"url": url, "source": "playwright"}
+    documents = []
+    if chunk_size > 0:
+        for i, c in enumerate(_chunk_text(text, chunk_size)):
+            documents.append({"text": c, "metadata": {**meta, "chunk_index": i}})
+    else:
+        documents.append({"text": text, "metadata": meta})
+    return {"documents": documents, "total": len(documents), "source": url}
+
+
+# ─── Puppeteer-style Web Scraper ──────────────────────────────────────────────
+
+@register_node("loader.puppeteer_web")
+async def loader_puppeteer_web(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Scrape sites with Playwright (Puppeteer equivalent in Python)."""
+    # Delegate to playwright loader since Puppeteer is Node.js only
+    from core.execution_engine import NODE_HANDLERS
+    if "loader.playwright_web" in NODE_HANDLERS:
+        return await NODE_HANDLERS["loader.playwright_web"](config, input_data, credential_id, db)
+    raise RuntimeError("loader.puppeteer_web: requires playwright — install with: pip install playwright && playwright install chromium")
+
+
+# ─── S3 Directory Loader ──────────────────────────────────────────────────────
+
+@register_node("loader.s3_directory")
+async def loader_s3_directory(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Load all files from an S3 prefix as documents."""
+    bucket = config.get("bucket") or input_data.get("bucket")
+    prefix = config.get("prefix", "")
+    file_extensions = config.get("file_extensions") or [".txt", ".pdf", ".csv", ".json", ".md"]
+    max_files = int(config.get("max_files", 50))
+    if not bucket:
+        raise ValueError("loader.s3_directory requires 'bucket'")
+    try:
+        import boto3
+        s3 = boto3.client(
+            "s3",
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID or None,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY or None,
+            region_name=settings.AWS_REGION,
+        )
+        response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+        objects = response.get("Contents", [])[:max_files]
+        from core.execution_engine import NODE_HANDLERS
+        documents = []
+        for obj in objects:
+            key = obj["Key"]
+            ext = "." + key.rsplit(".", 1)[-1].lower() if "." in key else ""
+            if file_extensions and ext not in file_extensions:
+                continue
+            body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+            try:
+                text = body.decode("utf-8", errors="replace")
+            except Exception:
+                continue
+            documents.append({"text": text, "metadata": {"s3_key": key, "bucket": bucket, "source": f"s3://{bucket}/{key}"}})
+        return {"documents": documents, "total": len(documents), "bucket": bucket, "prefix": prefix}
+    except ImportError:
+        raise ImportError("loader.s3_directory requires boto3: pip install boto3")
+
+
+# ─── SearchAPI Document Loader ────────────────────────────────────────────────
+
+@register_node("loader.searchapi_docs")
+async def loader_searchapi_docs(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Load search results from SearchAPI.io as documents."""
+    api_key = getattr(settings, "SEARCHAPI_API_KEY", None)
+    if not api_key:
+        raise ValueError("loader.searchapi_docs requires SEARCHAPI_API_KEY")
+    query = config.get("query") or input_data.get("query", "")
+    if not query:
+        raise ValueError("loader.searchapi_docs requires 'query'")
+    engine = config.get("engine", "google")
+    num = int(config.get("num", 10))
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(
+            "https://www.searchapi.io/api/v1/search",
+            params={"api_key": api_key, "engine": engine, "q": query, "num": num},
+        )
+        r.raise_for_status()
+        data = r.json()
+    results = data.get("organic_results", [])
+    documents = []
+    for item in results:
+        text = f"{item.get('title', '')}\n{item.get('snippet', '')}"
+        documents.append({
+            "text": text,
+            "metadata": {"url": item.get("link", ""), "title": item.get("title", ""), "source": "searchapi"},
+        })
+    return {"documents": documents, "total": len(documents), "query": query}
+
+
+# ─── SerpAPI Document Loader ──────────────────────────────────────────────────
+
+@register_node("loader.serpapi_docs")
+async def loader_serpapi_docs(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Load search results from SerpAPI as documents."""
+    api_key = getattr(settings, "SERPAPI_API_KEY", None)
+    if not api_key:
+        raise ValueError("loader.serpapi_docs requires SERPAPI_API_KEY")
+    query = config.get("query") or input_data.get("query", "")
+    if not query:
+        raise ValueError("loader.serpapi_docs requires 'query'")
+    engine = config.get("engine", "google")
+    num_results = int(config.get("num_results", 10))
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(
+            "https://serpapi.com/search",
+            params={"api_key": api_key, "engine": engine, "q": query, "num": num_results},
+        )
+        r.raise_for_status()
+        data = r.json()
+    organic = data.get("organic_results", [])
+    documents = []
+    for item in organic:
+        text = f"{item.get('title', '')}\n{item.get('snippet', '')}"
+        documents.append({
+            "text": text,
+            "metadata": {"url": item.get("link", ""), "source": "serpapi"},
+        })
+    return {"documents": documents, "total": len(documents), "query": query}
+
+
+# ─── Spider.cloud Crawler ─────────────────────────────────────────────────────
+
+@register_node("loader.spider_crawler")
+async def loader_spider_crawler(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Crawl websites using Spider.cloud API."""
+    api_key = getattr(settings, "SPIDER_API_KEY", None)
+    if not api_key:
+        raise ValueError("loader.spider_crawler requires SPIDER_API_KEY")
+    url = config.get("url") or input_data.get("url")
+    if not url:
+        raise ValueError("loader.spider_crawler requires 'url'")
+    limit = int(config.get("limit", 10))
+    chunk_size = int(config.get("chunk_size", 1000))
+    async with httpx.AsyncClient(timeout=120) as client:
+        r = await client.post(
+            "https://api.spider.cloud/crawl",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"url": url, "limit": limit, "return_format": "markdown"},
+        )
+        r.raise_for_status()
+        data = r.json()
+    documents = []
+    items = data if isinstance(data, list) else data.get("data", [])
+    for item in items:
+        text = item.get("markdown") or item.get("content") or str(item)
+        meta = {"url": item.get("url", url), "source": "spider"}
+        if chunk_size > 0:
+            for i, c in enumerate(_chunk_text(text, chunk_size)):
+                documents.append({"text": c, "metadata": {**meta, "chunk_index": i}})
+        else:
+            documents.append({"text": text, "metadata": meta})
+    return {"documents": documents, "total": len(documents), "source": url}
+
+
+# ─── Unstructured.io Loader ───────────────────────────────────────────────────
+
+@register_node("loader.unstructured")
+async def loader_unstructured(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Parse documents via Unstructured.io API (PDF, DOCX, HTML, etc.)."""
+    api_key = getattr(settings, "UNSTRUCTURED_API_KEY", None)
+    if not api_key:
+        raise ValueError("loader.unstructured requires UNSTRUCTURED_API_KEY")
+    import base64, tempfile
+    file_path = config.get("file_path") or input_data.get("file_path")
+    file_content_b64 = config.get("file_content") or input_data.get("file_content")
+    file_type = config.get("file_type", "pdf")
+    strategy = config.get("strategy", "auto")
+    if file_content_b64:
+        raw = base64.b64decode(file_content_b64)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_type}") as tmp:
+            tmp.write(raw)
+            file_path = tmp.name
+    if not file_path:
+        raise ValueError("loader.unstructured requires 'file_path' or 'file_content'")
+    async with httpx.AsyncClient(timeout=120) as client:
+        with open(file_path, "rb") as f:
+            r = await client.post(
+                "https://api.unstructured.io/general/v0/general",
+                headers={"unstructured-api-key": api_key},
+                files={"files": (file_path, f, f"application/{file_type}")},
+                data={"strategy": strategy},
+            )
+            r.raise_for_status()
+            elements = r.json()
+    documents = []
+    for el in elements:
+        text = el.get("text", "")
+        if text:
+            documents.append({
+                "text": text,
+                "metadata": {
+                    "type": el.get("type", ""),
+                    "page_number": el.get("metadata", {}).get("page_number"),
+                    "source": file_path,
+                },
+            })
+    return {"documents": documents, "total": len(documents), "source": file_path}
+
+
+# ─── VectorStore to Document Loader ──────────────────────────────────────────
+
+@register_node("loader.vectorstore_to_doc")
+async def loader_vectorstore_to_doc(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Convert vector store search results into documents for further processing."""
+    from core.execution_engine import NODE_HANDLERS
+    collection = config.get("collection", "default")
+    vs_type = config.get("vectorstore_type", "inmemory")
+    query = config.get("query") or input_data.get("query") or input_data.get("input", "")
+    top_k = int(config.get("top_k", 10))
+    if not query:
+        raise ValueError("loader.vectorstore_to_doc requires 'query'")
+    query_node = f"vectorstore.{vs_type}.query"
+    if query_node not in NODE_HANDLERS:
+        raise ValueError(f"loader.vectorstore_to_doc: vector store type '{vs_type}' not found")
+    result = await NODE_HANDLERS[query_node](
+        {"collection": collection, "query": query, "top_k": top_k},
+        {"query": query},
+        credential_id,
+        db,
+    )
+    docs = result.get("results", result.get("documents", []))
+    # Normalize to document format
+    documents = []
+    for doc in docs:
+        text = doc.get("content") or doc.get("text", str(doc))
+        meta = doc.get("metadata", {})
+        meta["score"] = doc.get("score")
+        meta["source"] = f"vectorstore.{vs_type}/{collection}"
+        documents.append({"text": text, "metadata": meta})
+    return {"documents": documents, "total": len(documents), "query": query, "collection": collection}

@@ -1,0 +1,1 @@
+# responsesynthesizer integration handlers

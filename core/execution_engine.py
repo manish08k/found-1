@@ -148,15 +148,23 @@ async def _execute_node(
     # persisted config.
     handler_config = {**node.get("config", {}), "_workflow_id": workflow_id, "_execution_id": execution_id, "_node_id": node.get("id")}
 
+    timeout_seconds = node.get("timeout_seconds")
+
     for attempt in range(1, max_attempts + 1):
         try:
-            result = await handler(
+            coro = handler(
                 config=handler_config,
                 input_data=input_data,
                 credential_id=credential_id,
                 db=db,
             )
+            if timeout_seconds:
+                result = await asyncio.wait_for(coro, timeout=float(timeout_seconds))
+            else:
+                result = await coro
             return result
+        except (asyncio.TimeoutError, TimeoutError):
+            raise
         except Exception as exc:
             if attempt == max_attempts:
                 raise

@@ -477,7 +477,7 @@ class VectorDocument(Base):
     doc_metadata = Column(JSON, default=dict)
     source_document_id = Column(String(255), nullable=True)  # links chunks to their parent document
     chunk_index = Column(Integer, nullable=True)  # ordering within a source document
-    metadata = Column(JSON, default=dict)  # additional metadata for filtering
+    extra_metadata = Column(JSON, default=dict)  # additional metadata for filtering (renamed from metadata — reserved by SQLAlchemy)
     created_at = Column(DateTime, default=_now)
 
     __table_args__ = (
@@ -551,18 +551,7 @@ class Assistant(Base):
         Index("ix_assistant_owner", "owner_id"),
     )
 
-    @property
-    def temperature(self):  # type: ignore[override]
-        return self._temperature / 10 if self._temperature else 0.7
-
-    @temperature.setter
-    def temperature(self, val):
-        self._temperature = int(float(val) * 10)
-
-
-# Patch: store temperature as float directly via JSON column to avoid conflicts
-Assistant.temperature = Column("temperature", Integer, default=7)
-Assistant.max_tokens = Column("max_tokens", Integer, default=1024)
+    # temperature and max_tokens are plain columns defined above — no property override needed
 
 
 class AssistantThread(Base):
@@ -571,7 +560,7 @@ class AssistantThread(Base):
     id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     assistant_id = Column(UUID(as_uuid=False), ForeignKey("assistants.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
-    metadata = Column(JSON, default=dict)
+    thread_metadata = Column(JSON, default=dict)  # renamed from metadata — reserved by SQLAlchemy
     created_at = Column(DateTime, default=_now)
 
     assistant = relationship("Assistant", back_populates="threads")

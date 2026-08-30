@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type { Workflow, Credential, Execution } from '../types'
 
-type Page = 'workflows' | 'credentials' | 'executions' | 'marketplace' | 'pricing' | 'assistants' | 'document-stores' | 'api-keys' | 'variables' | 'leads'
+type Page = 'workflows' | 'credentials' | 'executions' | 'marketplace' | 'pricing' | 'assistants' | 'document-stores' | 'api-keys' | 'variables' | 'leads' | 'approvals' | 'mcp' | 'evaluations' | 'policies' | 'costs' | 'ai-builder' | 'debugger' | 'versions' | 'agentflow'
 
 interface AppState {
   user: any | null

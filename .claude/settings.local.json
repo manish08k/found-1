@@ -1,5 +1,12 @@
 {
   "permissions": {
-    "defaultMode": "acceptEdits"
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(python3 -m py_compile main.py)",
+      "Bash(python3 -m py_compile storage/models.py)",
+      "Bash(python3 -m py_compile core/execution_engine.py)",
+      "Bash(python3 -m py_compile core/cost_tracker.py)",
+      "Bash(python3 -m py_compile core/evaluator.py)"
+    ]
   }
 }

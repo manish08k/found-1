@@ -259,3 +259,110 @@ export const feedbackApi = {
   stats: (workflowId?: string) =>
     http.get('/feedback/stats', { params: workflowId ? { workflow_id: workflowId } : {} }).then(r => r.data),
 }
+
+// ─── Approvals ────────────────────────────────────────────────────────────────
+export const approvalsApi = {
+  list: (params?: { status?: string }) =>
+    http.get('/approvals', { params }).then(r => r.data),
+  get: (id: string) => http.get(`/approvals/${id}`).then(r => r.data),
+  decide: (id: string, data: { action: 'approve' | 'reject'; reason?: string; edited_data?: any }) =>
+    http.post(`/approvals/${id}/decide`, data).then(r => r.data),
+  history: (params?: { page?: number; page_size?: number }) =>
+    http.get('/approvals/history', { params }).then(r => r.data),
+}
+
+// ─── MCP Management ───────────────────────────────────────────────────────────
+export const mcpApi = {
+  listServers: () => http.get('/mcp/management/servers').then(r => r.data),
+  registerServer: (data: { name: string; url: string; auth_type?: string; api_key?: string }) =>
+    http.post('/mcp/management/servers', data).then(r => r.data),
+  deleteServer: (id: string) => http.delete(`/mcp/management/servers/${id}`).then(r => r.data),
+  connectServer: (id: string) => http.post(`/mcp/management/servers/${id}/connect`).then(r => r.data),
+  getServerTools: (id: string) => http.get(`/mcp/management/servers/${id}/tools`).then(r => r.data),
+  updatePermissions: (id: string, data: { allowed_tools: string[] }) =>
+    http.put(`/mcp/management/servers/${id}/permissions`, data).then(r => r.data),
+}
+
+// ─── Evaluations ──────────────────────────────────────────────────────────────
+export const evaluationsApi = {
+  listDatasets: () => http.get('/evaluations/datasets').then(r => r.data),
+  createDataset: (data: { name: string; workflow_id?: string; description?: string }) =>
+    http.post('/evaluations/datasets', data).then(r => r.data),
+  deleteDataset: (id: string) => http.delete(`/evaluations/datasets/${id}`).then(r => r.data),
+  listCases: (datasetId: string, page?: number) =>
+    http.get(`/evaluations/datasets/${datasetId}/cases`, { params: { page } }).then(r => r.data),
+  createCase: (datasetId: string, data: { input_data: any; expected_output?: any; tags?: string[] }) =>
+    http.post(`/evaluations/datasets/${datasetId}/cases`, data).then(r => r.data),
+  bulkCreateCases: (datasetId: string, cases: Array<{ input_data: any; expected_output?: any }>) =>
+    http.post(`/evaluations/datasets/${datasetId}/cases/bulk`, { cases }).then(r => r.data),
+  deleteCase: (datasetId: string, caseId: string) =>
+    http.delete(`/evaluations/datasets/${datasetId}/cases/${caseId}`).then(r => r.data),
+  startRun: (data: { dataset_id: string; workflow_id: string; scorer_type?: string; scorer_config?: any }) =>
+    http.post('/evaluations/runs', data).then(r => r.data),
+  getRun: (runId: string) => http.get(`/evaluations/runs/${runId}`).then(r => r.data),
+  getRunResults: (runId: string, page?: number) =>
+    http.get(`/evaluations/runs/${runId}/results`, { params: { page } }).then(r => r.data),
+  compareRuns: (run1: string, run2: string) =>
+    http.get('/evaluations/compare', { params: { run1, run2 } }).then(r => r.data),
+}
+
+// ─── Policies / Guardrails ────────────────────────────────────────────────────
+export const policiesApi = {
+  list: () => http.get('/policies').then(r => r.data),
+  create: (data: { name: string; description?: string; is_active?: boolean; rules?: any[]; action?: string }) =>
+    http.post('/policies', data).then(r => r.data),
+  update: (id: string, data: any) => http.patch(`/policies/${id}`, data).then(r => r.data),
+  delete: (id: string) => http.delete(`/policies/${id}`).then(r => r.data),
+  test: (id: string, data: { workflow: any; trigger_data?: any }) =>
+    http.post(`/policies/${id}/test`, data).then(r => r.data),
+}
+
+// ─── Costs / Model Routing ────────────────────────────────────────────────────
+export const costsApi = {
+  getExecutionCosts: (executionId: string) =>
+    http.get(`/costs/executions/${executionId}`).then(r => r.data),
+  getWorkflowCosts: (workflowId: string, days?: number) =>
+    http.get(`/costs/workflows/${workflowId}`, { params: { days } }).then(r => r.data),
+  getSummary: (days?: number) =>
+    http.get('/costs/summary', { params: { days } }).then(r => r.data),
+  setBudget: (data: { workflow_id?: string; monthly_budget_usd: number; alert_threshold_pct?: number }) =>
+    http.post('/costs/budgets', data).then(r => r.data),
+  routeModel: (data: { preferred_model: string; budget_usd?: number; requirements?: any }) =>
+    http.post('/costs/route-model', data).then(r => r.data),
+}
+
+// ─── Workflow Versions ────────────────────────────────────────────────────────
+export const versionsApi = {
+  list: (workflowId: string) =>
+    http.get(`/workflows/${workflowId}/versions`).then(r => r.data),
+  get: (workflowId: string, version: number) =>
+    http.get(`/workflows/${workflowId}/versions/${version}`).then(r => r.data),
+  rollback: (workflowId: string, version: number) =>
+    http.post(`/workflows/${workflowId}/versions/${version}/rollback`).then(r => r.data),
+  publish: (workflowId: string, version: number) =>
+    http.post(`/workflows/${workflowId}/versions/${version}/publish`).then(r => r.data),
+  diff: (workflowId: string, v1: number, v2: number) =>
+    http.get(`/workflows/${workflowId}/versions/diff`, { params: { v1, v2 } }).then(r => r.data),
+}
+
+// ─── AI Builder ───────────────────────────────────────────────────────────────
+export const aiBuilderApi = {
+  generate: (data: { prompt: string; workflow_id?: string }) =>
+    http.post('/ai-builder/generate', data).then(r => r.data),
+  apply: (data: { workflow_id?: string; name?: string; nodes: any[]; edges: any[] }) =>
+    http.post('/ai-builder/apply', data).then(r => r.data),
+  validate: (data: { nodes: any[]; edges: any[] }) =>
+    http.post('/ai-builder/validate', data).then(r => r.data),
+}
+
+// ─── Execution Debug ──────────────────────────────────────────────────────────
+export const debugApi = {
+  getDebugInfo: (executionId: string) =>
+    http.get(`/executions/${executionId}/debug`).then(r => r.data),
+  retryNode: (executionId: string, nodeId: string) =>
+    http.post(`/executions/${executionId}/retry-node/${nodeId}`).then(r => r.data),
+  replay: (executionId: string) =>
+    http.post(`/executions/${executionId}/replay`).then(r => r.data),
+  replayFrom: (executionId: string, nodeId: string) =>
+    http.post(`/executions/${executionId}/replay-from/${nodeId}`).then(r => r.data),
+}

@@ -813,3 +813,225 @@ async def agentflow_sticky_note(config: dict, input_data: dict, credential_id: s
     """
     # Pure pass-through — sticky notes are UI-only
     return {**input_data, "_sticky_note": config.get("text", "")}
+
+
+# ─── New AgentFlow Nodes ───────────────────────────────────────────────────────
+
+@register_node("agentflow.planner")
+async def agentflow_planner(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Planner node — uses an LLM to break a goal into ordered subtasks.
+    config: model, goal_field (default "goal"), output_field (default "plan")
+    """
+    import json, re
+    goal_field = config.get("goal_field", "goal")
+    output_field = config.get("output_field", "plan")
+    goal = input_data.get(goal_field) or input_data.get("input") or str(input_data)
+    provider = "anthropic" if __import__("core.config", fromlist=["settings"]).settings.ANTHROPIC_API_KEY else "openai"
+    model = config.get("model", "")
+    system = (
+        "You are a task planner. Given a goal, produce a numbered list of clear, actionable subtasks.\n"
+        "Respond with ONLY a JSON array of strings: [\"step 1\", \"step 2\", ...]"
+    )
+    raw = await _call_llm(provider, model, system, f"Goal: {goal}", max_tokens=512)
+    cleaned = re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
+    try:
+        plan = json.loads(cleaned)
+        if not isinstance(plan, list):
+            plan = [cleaned]
+    except Exception:
+        plan = [s.strip("- ").strip() for s in cleaned.split("\n") if s.strip()]
+    return {**input_data, output_field: plan}
+
+
+@register_node("agentflow.router")
+async def agentflow_router(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Router node — uses an LLM to classify the input and pick a route.
+    config: model, routes (list of {"label": str, "description": str}), input_field
+    """
+    import json, re
+    routes = config.get("routes", [])
+    input_field = config.get("input_field", "input")
+    inp = input_data.get(input_field) or str(input_data)
+    provider = "anthropic" if __import__("core.config", fromlist=["settings"]).settings.ANTHROPIC_API_KEY else "openai"
+    model = config.get("model", "")
+    routes_desc = "\n".join(f"- {r['label']}: {r.get('description', '')}" for r in routes) if routes else "default"
+    system = (
+        "You are a router. Given the input, choose the most appropriate route from the list.\n"
+        "Respond with ONLY a JSON object: {\"route\": \"<route_label>\", \"reason\": \"...\"}"
+    )
+    prompt = f"Input: {inp}\n\nAvailable routes:\n{routes_desc}"
+    raw = await _call_llm(provider, model, system, prompt, max_tokens=200)
+    cleaned = re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
+    try:
+        result = json.loads(cleaned)
+        route = result.get("route", routes[0]["label"] if routes else "default")
+        reason = result.get("reason", "")
+    except Exception:
+        route = routes[0]["label"] if routes else "default"
+        reason = raw.strip()
+    return {**input_data, "route": route, "route_reason": reason}
+
+
+@register_node("agentflow.memory_read")
+async def agentflow_memory_read(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Memory Read — reads recent messages from MemoryMessage store.
+    config: conversation_id_field, limit
+    """
+    from sqlalchemy import select
+    from storage.models import MemoryMessage
+    conv_id_field = config.get("conversation_id_field", "conversation_id")
+    conv_id = input_data.get(conv_id_field) or config.get("_workflow_id")
+    limit = int(config.get("limit", 20))
+    messages = []
+    if conv_id and db:
+        result = await db.execute(
+            select(MemoryMessage)
+            .where(MemoryMessage.conversation_id == str(conv_id))
+            .order_by(MemoryMessage.created_at.desc())
+            .limit(limit)
+        )
+        rows = result.scalars().all()
+        messages = [{"role": m.role, "content": m.content} for m in reversed(rows)]
+    return {**input_data, "memory_messages": messages, "memory_count": len(messages)}
+
+
+@register_node("agentflow.memory_write")
+async def agentflow_memory_write(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Memory Write — persists a message to MemoryMessage store.
+    config: conversation_id_field, role, content_field
+    """
+    from storage.models import MemoryMessage
+    conv_id_field = config.get("conversation_id_field", "conversation_id")
+    conv_id = input_data.get(conv_id_field) or config.get("_workflow_id")
+    role = config.get("role", "assistant")
+    content_field = config.get("content_field", "output")
+    content = input_data.get(content_field) or str(input_data)
+    if conv_id and db and content:
+        msg = MemoryMessage(
+            workflow_id=config.get("_workflow_id"),
+            conversation_id=str(conv_id),
+            role=role,
+            content=str(content),
+        )
+        db.add(msg)
+        await db.flush()
+    return {**input_data, "_memory_written": True}
+
+
+@register_node("agentflow.parallel_agents")
+async def agentflow_parallel_agents(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Parallel Agents — executes multiple sub-workflows concurrently.
+    config: workflow_ids (list of workflow IDs)
+    """
+    import asyncio, uuid
+    from storage.models import Execution, ExecutionStatus, Workflow
+    from sqlalchemy import select
+    from core.execution_engine import execute_workflow
+    workflow_ids = config.get("workflow_ids", [])
+    if not workflow_ids:
+        return {**input_data, "parallel_results": {}}
+    results = {}
+
+    async def run_one(wf_id: str):
+        wf_result = await db.execute(select(Workflow).where(Workflow.id == wf_id))
+        wf = wf_result.scalar_one_or_none()
+        if not wf:
+            return wf_id, {"error": f"Workflow {wf_id} not found"}
+        exec_id = str(uuid.uuid4())
+        execution = Execution(
+            id=exec_id, workflow_id=wf_id,
+            status=ExecutionStatus.queued, trigger_type="parallel_agent",
+            trigger_data=input_data,
+        )
+        db.add(execution)
+        await db.flush()
+        await execute_workflow(exec_id, wf.definition, input_data)
+        await db.refresh(execution)
+        return wf_id, {"status": execution.status.value, "node_results": execution.node_results}
+
+    tasks = [run_one(wf_id) for wf_id in workflow_ids]
+    resolved = await asyncio.gather(*tasks, return_exceptions=True)
+    for item in resolved:
+        if isinstance(item, Exception):
+            results[str(item)] = {"error": str(item)}
+        else:
+            wf_id, res = item
+            results[wf_id] = res
+
+    return {**input_data, "parallel_results": results}
+
+
+@register_node("agentflow.sequential_agents")
+async def agentflow_sequential_agents(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Sequential Agents — runs sub-workflows in sequence, passing output forward.
+    config: workflow_ids (list of workflow IDs)
+    """
+    import uuid
+    from storage.models import Execution, ExecutionStatus, Workflow
+    from sqlalchemy import select
+    from core.execution_engine import execute_workflow
+    workflow_ids = config.get("workflow_ids", [])
+    current_data = dict(input_data)
+    results = []
+    for wf_id in workflow_ids:
+        wf_result = await db.execute(select(Workflow).where(Workflow.id == wf_id))
+        wf = wf_result.scalar_one_or_none()
+        if not wf:
+            results.append({"workflow_id": wf_id, "error": "Not found"})
+            continue
+        exec_id = str(uuid.uuid4())
+        execution = Execution(
+            id=exec_id, workflow_id=wf_id,
+            status=ExecutionStatus.queued, trigger_type="sequential_agent",
+            trigger_data=current_data,
+        )
+        db.add(execution)
+        await db.flush()
+        await execute_workflow(exec_id, wf.definition, current_data)
+        await db.refresh(execution)
+        # Merge outputs into current_data for next agent
+        node_results = execution.node_results or {}
+        for nr in node_results.values():
+            if isinstance(nr, dict) and nr.get("status") == "success":
+                out = nr.get("output", {})
+                if isinstance(out, dict):
+                    current_data.update(out)
+        results.append({"workflow_id": wf_id, "status": execution.status.value})
+    return {**current_data, "sequential_results": results}
+
+
+@register_node("agentflow.tool_caller")
+async def agentflow_tool_caller(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """
+    Tool Caller — calls any registered node handler by type name with LLM-generated arguments.
+    config: tool_name (node type), tool_description
+    """
+    import json, re
+    from core.execution_engine import NODE_HANDLERS
+    tool_name = config.get("tool_name", "")
+    if not tool_name or tool_name not in NODE_HANDLERS:
+        raise ValueError(f"Tool '{tool_name}' is not registered. Available: {list(NODE_HANDLERS.keys())[:20]}")
+    tool_desc = config.get("tool_description", f"Tool: {tool_name}")
+    provider = "anthropic" if __import__("core.config", fromlist=["settings"]).settings.ANTHROPIC_API_KEY else "openai"
+    system = (
+        f"You are calling the tool: {tool_name}\n"
+        f"Description: {tool_desc}\n"
+        "Based on the input data, generate the config arguments for this tool.\n"
+        "Respond with ONLY a valid JSON object of config parameters."
+    )
+    raw = await _call_llm(provider, "", system, f"Input: {json.dumps(input_data)[:2000]}", max_tokens=512)
+    cleaned = re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
+    try:
+        generated_config = json.loads(cleaned)
+    except Exception:
+        generated_config = {}
+    merged_config = {**generated_config, **config}
+    handler = NODE_HANDLERS[tool_name]
+    result = await handler(config=merged_config, input_data=input_data, credential_id=credential_id, db=db)
+    return {**input_data, "tool_result": result, "_tool_called": tool_name}

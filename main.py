@@ -90,6 +90,20 @@ import integrations.utilities.handler
 import integrations.multiagents.handler
 # Advanced agentflow nodes
 import integrations.agentflow.nodes
+# New CRM integrations
+import integrations.pipedrive.handler
+import integrations.zoho_crm.handler
+import integrations.apollo.handler
+# Core utility node families
+import integrations.transform.handler
+import integrations.code.handler
+import integrations.files.handler
+import integrations.datetime_.handler
+import integrations.crypto_.handler
+import integrations.flow_control.handler
+import integrations.activecampaign.handler
+import integrations.klaviyo.handler
+import integrations.sendgrid.handler
 
 log = structlog.get_logger(__name__)
 
@@ -118,7 +132,7 @@ app = FastAPI(
 app.add_middleware(IdempotencyMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
-# CORS: allow_origins=["*"] with allow_credentials=True is invalid per
+# CORS: a wildcard origin combined with allow_credentials=True is invalid per
 # the CORS spec — browsers silently reject it. In debug mode we allow
 # common local dev origins; in production we allow only APP_BASE_URL
 # (and FRONTEND_URL if it differs, e.g. when the SPA is on a separate

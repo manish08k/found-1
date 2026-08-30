@@ -160,6 +160,22 @@ async def get_cost_summary(
     }
 
 
+@router.post("/route-model")
+async def route_model(
+    body: dict,
+    user: User = Depends(get_current_user),
+):
+    """Return model routing recommendation based on cost/capability/latency constraints."""
+    from core.model_router import route_model as _route_model, get_fallback_model
+    result = _route_model(
+        preferred_model=body.get("preferred_model", "gpt-4o"),
+        budget_usd=body.get("budget_usd"),
+        requirements=body.get("requirements"),
+    )
+    result["fallback_model"] = get_fallback_model(result["model"])
+    return result
+
+
 @router.post("/budgets")
 async def set_budget(
     body: BudgetRequest,

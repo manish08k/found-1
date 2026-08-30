@@ -14,6 +14,7 @@ from schedules.manager import start_scheduler, stop_scheduler
 from api.routes import oauth, workflows, executions, credentials, webhooks, triggers, schedules
 from api.routes import orgs, versions, dlq, marketplace, privacy, billing, approvals, mcp_server
 from api.routes import chat_messages, assistants, document_stores, api_keys, variables, leads, feedback
+from api.routes import mcp_management, ai_builder, evaluations, policies, costs
 from api.routes.auth import router as auth_router
 from api.middleware.rate_limit import RateLimitMiddleware
 from api.middleware.idempotency import IdempotencyMiddleware
@@ -87,6 +88,8 @@ import integrations.responsesynthesizer.handler
 import integrations.sequentialagents.handler
 import integrations.utilities.handler
 import integrations.multiagents.handler
+# Advanced agentflow nodes
+import integrations.agentflow.nodes
 
 log = structlog.get_logger(__name__)
 
@@ -172,6 +175,11 @@ app.include_router(api_keys.router,      prefix="/api/api-keys",        tags=["A
 app.include_router(variables.router,     prefix="/api/variables",       tags=["Variables"])
 app.include_router(leads.router,         prefix="/api/leads",           tags=["Leads"])
 app.include_router(feedback.router,      prefix="/api/feedback",        tags=["Feedback"])
+app.include_router(mcp_management.router, prefix="/api/mcp/management",  tags=["MCP Management"])
+app.include_router(ai_builder.router,     prefix="/api/ai-builder",      tags=["AI Builder"])
+app.include_router(evaluations.router,    prefix="/api/evaluations",     tags=["Evaluations"])
+app.include_router(policies.router,       prefix="/api/policies",        tags=["Policies"])
+app.include_router(costs.router,          prefix="/api/costs",           tags=["Costs"])
 
 
 @app.get("/health", tags=["Health"])

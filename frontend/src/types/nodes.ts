@@ -779,6 +779,11 @@ export const NODE_CATALOG: NodeDef[] = [
   ] },
 ]
 
+import { AGENTFLOW_NODES } from '../catalog/agentflow_nodes'
+
+// Merge advanced agentflow nodes into the catalog
+NODE_CATALOG.push(...AGENTFLOW_NODES)
+
 export const CATEGORIES = [...new Set(NODE_CATALOG.map(n => n.category))]
 
 export function getNodeDef(type: string): NodeDef | undefined {

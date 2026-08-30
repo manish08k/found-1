@@ -17,9 +17,9 @@ Routes:
 """
 from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, delete as sql_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.middleware.auth import get_current_user
@@ -239,6 +239,142 @@ async def clear_documents(
     )
     await db.commit()
     return {"deleted": result.rowcount, "collection": col}
+
+
+@router.post("/{store_id}/upload")
+async def upload_document(
+    store_id: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Upload a document: parse, chunk, embed, and store."""
+    await _get_or_404(store_id, user.id, db)
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    from core.rag_pipeline import ingest_document
+
+    result = await ingest_document(
+        store_id=store_id,
+        file_bytes=file_bytes,
+        filename=file.filename or "unknown",
+        file_type=file.content_type or "",
+        db=db,
+    )
+    return result
+
+
+@router.get("/{store_id}/documents")
+async def list_documents(
+    store_id: str,
+    limit: int = Query(50, le=500),
+    offset: int = Query(0),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """List uploaded documents (grouped by source_document_id) with status."""
+    await _get_or_404(store_id, user.id, db)
+
+    from sqlalchemy import func
+
+    # Group by source_document_id
+    result = await db.execute(
+        select(
+            VectorDocument.source_document_id,
+            func.min(VectorDocument.doc_metadata).label("metadata"),
+            func.count(VectorDocument.id).label("chunk_count"),
+            func.min(VectorDocument.created_at).label("created_at"),
+        )
+        .where(VectorDocument.collection == store_id)
+        .group_by(VectorDocument.source_document_id)
+        .order_by(func.min(VectorDocument.created_at).desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    rows = result.all()
+
+    documents = []
+    for row in rows:
+        meta = row.metadata if isinstance(row.metadata, dict) else {}
+        documents.append({
+            "source_document_id": row.source_document_id,
+            "filename": meta.get("filename", "unknown"),
+            "chunk_count": row.chunk_count,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "status": "indexed",
+        })
+
+    return {"documents": documents, "count": len(documents)}
+
+
+@router.delete("/{store_id}/documents/{doc_id}")
+async def delete_document(
+    store_id: str,
+    doc_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Remove a source document and all its chunks."""
+    await _get_or_404(store_id, user.id, db)
+
+    result = await db.execute(
+        sql_delete(VectorDocument).where(
+            VectorDocument.collection == store_id,
+            VectorDocument.source_document_id == doc_id,
+        )
+    )
+    await db.commit()
+    return {"deleted": result.rowcount, "source_document_id": doc_id}
+
+
+@router.get("/{store_id}/inspect")
+async def inspect_store(
+    store_id: str,
+    query: str = Query("", description="Optional test query to show retrieval debug info"),
+    top_k: int = Query(5, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Show retrieval debug info: document stats and optionally top chunks for a test query."""
+    store = await _get_or_404(store_id, user.id, db)
+
+    from sqlalchemy import func
+
+    # Stats
+    count_result = await db.execute(
+        select(func.count(VectorDocument.id)).where(VectorDocument.collection == store_id)
+    )
+    total_chunks = count_result.scalar_one()
+
+    # Unique source documents
+    source_count_result = await db.execute(
+        select(func.count(func.distinct(VectorDocument.source_document_id)))
+        .where(VectorDocument.collection == store_id)
+    )
+    source_docs = source_count_result.scalar_one()
+
+    inspection = {
+        "store_id": store_id,
+        "store_name": store.name,
+        "embedding_model": store.embedding_model,
+        "chunk_size": store.chunk_size,
+        "chunk_overlap": store.chunk_overlap,
+        "total_chunks": total_chunks,
+        "source_documents": source_docs,
+    }
+
+    # If query provided, show retrieval debug
+    if query.strip():
+        from core.rag_pipeline import query_documents
+        results = await query_documents(store_id, query, top_k=top_k, db=db)
+        inspection["query"] = query
+        inspection["top_chunks"] = results.get("results", [])
+        inspection["total_searched"] = results.get("total_searched", 0)
+
+    return inspection
 
 
 @router.get("/{store_id}/chunks")

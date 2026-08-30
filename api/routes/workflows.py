@@ -143,6 +143,18 @@ async def update_workflow(
     workflow = await _get_owned_workflow(workflow_id, user.id, db)
     if body.definition is not None:
         check_write_db_permission(body.definition.model_dump(), user)
+
+    # Auto-snapshot current version before modifying
+    if body.definition is not None and workflow.definition:
+        from core.versioning import snapshot_version
+        change_parts = []
+        if body.name and body.name != workflow.name:
+            change_parts.append(f"renamed to '{body.name}'")
+        if body.definition:
+            change_parts.append("definition updated")
+        summary = "; ".join(change_parts) if change_parts else "workflow updated"
+        await snapshot_version(db, workflow, user.id, change_summary=summary)
+
     if body.name is not None:
         workflow.name = body.name
     if body.description is not None:

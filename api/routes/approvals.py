@@ -23,7 +23,10 @@ router = APIRouter(prefix="/api/approvals", tags=["Approvals"])
 def _serialize(a: Approval) -> dict:
     return {
         "id": a.id, "execution_id": a.execution_id, "node_id": a.node_id, "status": a.status,
+        "workflow_id": a.workflow_id, "assigned_to": a.assigned_to,
         "prompt": a.prompt, "payload": a.payload, "response_payload": a.response_payload,
+        "reason": a.reason, "edited_data": a.edited_data,
+        "decided_by": a.decided_by,
         "created_at": a.created_at.isoformat(), "expires_at": a.expires_at.isoformat() if a.expires_at else None,
         "decided_at": a.decided_at.isoformat() if a.decided_at else None,
     }
@@ -66,8 +69,10 @@ async def get_approval(approval_id: str, db: AsyncSession = Depends(get_db), use
 
 
 class ApprovalDecision(BaseModel):
-    decision: str  # "approve" | "reject"
+    decision: str  # "approve" | "reject" | "edit"
     response_payload: dict | None = None  # e.g. an edited version of the content being approved
+    reason: str | None = None  # reason for the decision
+    edited_data: dict | None = None  # modified data (for "edit" decisions)
 
 
 @router.post("/{approval_id}/decide")
@@ -77,17 +82,22 @@ async def decide_approval(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    if body.decision not in ("approve", "reject"):
-        raise HTTPException(status_code=400, detail="decision must be 'approve' or 'reject'")
+    if body.decision not in ("approve", "reject", "edit"):
+        raise HTTPException(status_code=400, detail="decision must be 'approve', 'reject', or 'edit'")
 
     approval = await _owned_approval(approval_id, user, db)
     if approval.status != "pending":
         raise HTTPException(status_code=409, detail=f"This approval was already decided ({approval.status})")
 
-    approval.status = "approved" if body.decision == "approve" else "rejected"
+    if body.decision == "edit":
+        approval.status = "approved"
+    else:
+        approval.status = "approved" if body.decision == "approve" else "rejected"
     approval.response_payload = body.response_payload
     approval.decided_by = user.id
     approval.decided_at = datetime.utcnow()
+    approval.reason = body.reason
+    approval.edited_data = body.edited_data
 
     exec_result = await db.execute(select(Execution).where(Execution.id == approval.execution_id))
     execution = exec_result.scalar_one_or_none()
@@ -122,3 +132,32 @@ async def decide_approval(
         queue="workflows",
     )
     return {"status": "approved", "execution_status": "resuming"}
+
+
+@router.get("/history")
+async def approval_history(
+    page: int = 1,
+    page_size: int = 50,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Audit history of all approval decisions made by the user or across their workflows."""
+    stmt = (
+        select(Approval)
+        .join(Execution, Execution.id == Approval.execution_id)
+        .join(Workflow, Workflow.id == Execution.workflow_id)
+        .where(
+            Workflow.owner_id == user.id,
+            Approval.status != "pending",
+        )
+        .order_by(Approval.decided_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    result = await db.execute(stmt)
+    approvals = result.scalars().all()
+    return {
+        "history": [_serialize(a) for a in approvals],
+        "page": page,
+        "page_size": page_size,
+    }

@@ -68,6 +68,38 @@ async def rollback(
     return {"id": workflow.id, "version": workflow.version, "definition": workflow.definition}
 
 
+@router.post("/{workflow_id}/versions/{version}/publish")
+async def publish_version(
+    workflow_id: str,
+    version: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Mark a version as the production version."""
+    await _get_owned_workflow(workflow_id, user, db)
+    from storage.models import WorkflowVersion
+    from sqlalchemy import update
+
+    # Unmark all other versions as not published
+    await db.execute(
+        update(WorkflowVersion)
+        .where(WorkflowVersion.workflow_id == workflow_id)
+        .values(is_published=False)
+    )
+
+    v = await get_version(db, workflow_id, version)
+    if not v:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    v.is_published = True
+    await db.commit()
+    return {
+        "version": v.version,
+        "is_published": True,
+        "workflow_id": workflow_id,
+    }
+
+
 @router.get("/{workflow_id}/versions/diff")
 async def diff(
     workflow_id: str,

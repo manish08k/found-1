@@ -360,6 +360,7 @@ class WorkflowVersion(Base):
     definition = Column(JSON, nullable=False, default=dict)
     settings = Column(JSON, default=dict)
     change_summary = Column(Text, nullable=True)
+    is_published = Column(Boolean, default=False)  # marked as production version
     created_by = Column(UUID(as_uuid=False), nullable=True)
     created_at = Column(DateTime, default=_now)
 
@@ -474,10 +475,14 @@ class VectorDocument(Base):
     text = Column(Text, nullable=False)
     embedding = Column(JSON, nullable=False)  # list[float]
     doc_metadata = Column(JSON, default=dict)
+    source_document_id = Column(String(255), nullable=True)  # links chunks to their parent document
+    chunk_index = Column(Integer, nullable=True)  # ordering within a source document
+    metadata = Column(JSON, default=dict)  # additional metadata for filtering
     created_at = Column(DateTime, default=_now)
 
     __table_args__ = (
         Index("ix_vector_workflow_collection", "workflow_id", "collection"),
+        Index("ix_vector_source_doc", "source_document_id"),
     )
 
 
@@ -507,9 +512,16 @@ class Approval(Base):
     decided_at = Column(DateTime, nullable=True)
     expires_at = Column(DateTime, nullable=True)
 
+    # Enhanced fields for richer approval management
+    workflow_id = Column(UUID(as_uuid=False), nullable=True)
+    assigned_to = Column(UUID(as_uuid=False), nullable=True)
+    reason = Column(Text, nullable=True)
+    edited_data = Column(JSON, nullable=True)
+
     __table_args__ = (
         Index("ix_approvals_execution", "execution_id"),
         Index("ix_approvals_status", "status"),
+        Index("ix_approvals_assigned", "assigned_to"),
     )
 
 
@@ -695,4 +707,152 @@ class MessageFeedback(Base):
     __table_args__ = (
         Index("ix_feedback_workflow", "workflow_id"),
         Index("ix_feedback_message", "message_id"),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  MCP Servers — external MCP server registrations
+# ─────────────────────────────────────────────────────────────────────────────
+class MCPServer(Base):
+    __tablename__ = "mcp_servers"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id = Column(UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True)
+    user_id = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(255), nullable=False)
+    url = Column(String(1024), nullable=False)
+    auth_type = Column(String(32), default="none")  # none, api_key, oauth
+    api_key_encrypted = Column(Text, nullable=True)  # AES-256 encrypted
+    allowed_tools = Column(JSON, default=list)  # list of tool names, empty = all
+    discovered_tools = Column(JSON, default=list)  # cached tool list from server
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=_now)
+
+    __table_args__ = (
+        Index("ix_mcp_server_user", "user_id"),
+        Index("ix_mcp_server_org", "org_id"),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Evaluation — datasets, cases, runs, results for workflow testing
+# ─────────────────────────────────────────────────────────────────────────────
+class EvaluationDataset(Base):
+    __tablename__ = "evaluation_datasets"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    name = Column(String(255), nullable=False)
+    workflow_id = Column(UUID(as_uuid=False), ForeignKey("workflows.id", ondelete="SET NULL"), nullable=True)
+    org_id = Column(UUID(as_uuid=False), nullable=True)
+    created_by = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=_now)
+
+    cases = relationship("EvaluationCase", back_populates="dataset", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_eval_dataset_owner", "created_by"),
+    )
+
+
+class EvaluationCase(Base):
+    __tablename__ = "evaluation_cases"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    dataset_id = Column(UUID(as_uuid=False), ForeignKey("evaluation_datasets.id", ondelete="CASCADE"), nullable=False)
+    input_data = Column(JSON, nullable=False, default=dict)
+    expected_output = Column(JSON, nullable=True, default=dict)
+    tags = Column(JSON, default=list)
+
+    dataset = relationship("EvaluationDataset", back_populates="cases")
+
+    __table_args__ = (
+        Index("ix_eval_case_dataset", "dataset_id"),
+    )
+
+
+class EvaluationRun(Base):
+    __tablename__ = "evaluation_runs"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    dataset_id = Column(UUID(as_uuid=False), ForeignKey("evaluation_datasets.id", ondelete="CASCADE"), nullable=False)
+    workflow_id = Column(UUID(as_uuid=False), ForeignKey("workflows.id", ondelete="SET NULL"), nullable=True)
+    workflow_version_id = Column(UUID(as_uuid=False), nullable=True)
+    status = Column(String(32), default="pending")  # pending, running, completed, failed
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    scorer_type = Column(String(64), default="exact_match")  # exact_match, contains, llm_judge, regex, custom
+    scorer_config = Column(JSON, default=dict)
+    summary = Column(JSON, default=dict)  # {pass_count, fail_count, scores}
+    created_at = Column(DateTime, default=_now)
+
+    results = relationship("EvaluationResult", back_populates="run", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_eval_run_dataset", "dataset_id"),
+        Index("ix_eval_run_workflow", "workflow_id"),
+    )
+
+
+class EvaluationResult(Base):
+    __tablename__ = "evaluation_results"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    run_id = Column(UUID(as_uuid=False), ForeignKey("evaluation_runs.id", ondelete="CASCADE"), nullable=False)
+    case_id = Column(UUID(as_uuid=False), ForeignKey("evaluation_cases.id", ondelete="SET NULL"), nullable=True)
+    actual_output = Column(JSON, nullable=True)
+    score = Column(Integer, nullable=True)  # 0 or 1 for binary, 0-100 for graded
+    passed = Column(Boolean, nullable=True)
+    error = Column(Text, nullable=True)
+
+    run = relationship("EvaluationRun", back_populates="results")
+
+    __table_args__ = (
+        Index("ix_eval_result_run", "run_id"),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Policy / Guardrails — org-level execution policies
+# ─────────────────────────────────────────────────────────────────────────────
+class Policy(Base):
+    __tablename__ = "policies"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id = Column(UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True)
+    rules = Column(JSON, default=list)  # list of {type, config}
+    action = Column(String(32), default="block")  # block | warn | require_approval
+    created_by = Column(UUID(as_uuid=False), nullable=True)
+    created_at = Column(DateTime, default=_now)
+
+    __table_args__ = (
+        Index("ix_policy_org", "org_id"),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Execution Cost — per-node LLM usage tracking
+# ─────────────────────────────────────────────────────────────────────────────
+class ExecutionCost(Base):
+    __tablename__ = "execution_costs"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    execution_id = Column(UUID(as_uuid=False), ForeignKey("executions.id", ondelete="CASCADE"), nullable=True)
+    node_id = Column(String(128), nullable=True)
+    node_type = Column(String(128), nullable=True)
+    model = Column(String(128), nullable=True)
+    provider = Column(String(64), nullable=True)
+    input_tokens = Column(Integer, default=0)
+    output_tokens = Column(Integer, default=0)
+    total_tokens = Column(Integer, default=0)
+    estimated_cost_usd = Column(Integer, default=0)  # stored as microdollars (1e-6 USD)
+    latency_ms = Column(Integer, default=0)
+    created_at = Column(DateTime, default=_now)
+
+    __table_args__ = (
+        Index("ix_cost_execution", "execution_id"),
+        Index("ix_cost_created", "created_at"),
     )

@@ -34,6 +34,7 @@ celery_app.conf.update(
         "workers.tasks.poll_trigger_task": {"queue": "polling"},
         "workers.tasks.refresh_tokens_task": {"queue": "maintenance"},
         "workers.tasks.cleanup_executions_task": {"queue": "maintenance"},
+        "workers.tasks.run_evaluation_task": {"queue": "workflows"},
     },
     task_queues=[
         Queue("workflows", routing_key="workflows"),
@@ -107,6 +108,12 @@ class WorkflowTask(Task):
 def run_workflow_task(self, execution_id: str, workflow_definition: dict, trigger_data: dict):
     from core.execution_engine import execute_workflow
     _run_async(execute_workflow(execution_id, workflow_definition, trigger_data))
+
+
+@celery_app.task(name="workers.tasks.run_evaluation_task")
+def run_evaluation_task(run_id: str):
+    from core.evaluator import run_evaluation
+    _run_async(run_evaluation(run_id))
 
 
 @celery_app.task(name="workers.tasks.poll_trigger_task")

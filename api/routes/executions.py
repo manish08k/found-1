@@ -190,6 +190,185 @@ async def retry_execution(
     return {"execution_id": new_exec.id, "status": new_exec.status}
 
 
+# ─── Debug ───────────────────────────────────────────────────────────────────
+
+@router.get("/{execution_id}/debug")
+async def debug_execution(
+    execution_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Full debug info per node: input, output, timing, errors."""
+    execution = await _load(execution_id, user.id, db)
+    node_results = execution.node_results or {}
+
+    debug_nodes = []
+    for node_id, result in node_results.items():
+        if not isinstance(result, dict):
+            debug_nodes.append({"node_id": node_id, "raw": result})
+            continue
+
+        debug_nodes.append({
+            "node_id": node_id,
+            "status": result.get("status", "unknown"),
+            "input_data": result.get("input_data"),
+            "output_data": result.get("output") or result.get("output_data"),
+            "error": result.get("error"),
+            "started_at": result.get("started_at"),
+            "finished_at": result.get("finished_at"),
+            "duration_ms": result.get("duration_ms"),
+            "retries": result.get("retries", 0),
+        })
+
+    return {
+        "execution_id": execution.id,
+        "workflow_id": execution.workflow_id,
+        "status": execution.status,
+        "trigger_data": execution.trigger_data,
+        "error": execution.error,
+        "started_at": execution.started_at.isoformat() if execution.started_at else None,
+        "finished_at": execution.finished_at.isoformat() if execution.finished_at else None,
+        "nodes": debug_nodes,
+    }
+
+
+@router.post("/{execution_id}/retry-node/{node_id}")
+async def retry_single_node(
+    execution_id: str,
+    node_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Retry a single failed node within an execution."""
+    execution = await _load(execution_id, user.id, db)
+    node_results = dict(execution.node_results or {})
+
+    node_result = node_results.get(node_id)
+    if not node_result or not isinstance(node_result, dict):
+        raise HTTPException(404, f"Node {node_id} not found in execution results")
+
+    if node_result.get("status") != "error":
+        raise HTTPException(409, f"Node {node_id} is not in error state (status={node_result.get('status')})")
+
+    # Clear the failed node result so it gets re-executed
+    node_results[node_id] = {"status": "pending_retry"}
+    execution.node_results = node_results
+    execution.status = ExecutionStatus.running
+    execution.error = None
+    await db.commit()
+
+    wf = await _load_workflow(execution.workflow_id, user.id, db)
+
+    from workers.tasks import run_workflow_task
+    run_workflow_task.apply_async(
+        args=[execution.id, wf.definition, execution.trigger_data or {}],
+        queue="workflows",
+    )
+    return {"ok": True, "execution_id": execution_id, "node_id": node_id, "status": "retrying"}
+
+
+@router.post("/{execution_id}/replay")
+async def replay_execution(
+    execution_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Replay entire execution from scratch with same trigger data."""
+    old = await _load(execution_id, user.id, db)
+    wf = await _load_workflow(old.workflow_id, user.id, db)
+
+    new_exec = Execution(
+        id=str(uuid.uuid4()),
+        workflow_id=old.workflow_id,
+        status=ExecutionStatus.queued,
+        trigger_type="replay",
+        trigger_data=old.trigger_data or {},
+    )
+    db.add(new_exec)
+    await db.flush()
+
+    from workers.tasks import run_workflow_task
+    run_workflow_task.delay(
+        execution_id=new_exec.id,
+        workflow_definition=wf.definition,
+        trigger_data=old.trigger_data or {},
+    )
+    await db.commit()
+    return {
+        "execution_id": new_exec.id,
+        "replayed_from": execution_id,
+        "status": "queued",
+    }
+
+
+@router.post("/{execution_id}/replay-from/{node_id}")
+async def replay_from_node(
+    execution_id: str,
+    node_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Replay from a specific node, keeping earlier results intact."""
+    execution = await _load(execution_id, user.id, db)
+    wf = await _load_workflow(execution.workflow_id, user.id, db)
+
+    # Create new execution with partial results
+    old_results = dict(execution.node_results or {})
+
+    # Keep results for nodes that come before node_id in topological order
+    from core.execution_engine import topological_sort
+
+    nodes = wf.definition.get("nodes", [])
+    edges = wf.definition.get("edges", [])
+
+    try:
+        levels = topological_sort(nodes, edges)
+    except ValueError:
+        raise HTTPException(400, "Workflow graph has a cycle")
+
+    # Find which nodes come before node_id
+    keep_nodes = set()
+    found = False
+    for level in levels:
+        if node_id in level:
+            found = True
+            break
+        for nid in level:
+            keep_nodes.add(nid)
+
+    if not found:
+        raise HTTPException(404, f"Node {node_id} not found in workflow")
+
+    # Only keep results for nodes before the target
+    partial_results = {nid: old_results[nid] for nid in keep_nodes if nid in old_results}
+
+    new_exec = Execution(
+        id=str(uuid.uuid4()),
+        workflow_id=execution.workflow_id,
+        status=ExecutionStatus.queued,
+        trigger_type="replay_from",
+        trigger_data=execution.trigger_data or {},
+        node_results=partial_results,
+    )
+    db.add(new_exec)
+    await db.flush()
+
+    from workers.tasks import run_workflow_task
+    run_workflow_task.delay(
+        execution_id=new_exec.id,
+        workflow_definition=wf.definition,
+        trigger_data=execution.trigger_data or {},
+    )
+    await db.commit()
+    return {
+        "execution_id": new_exec.id,
+        "replayed_from": execution_id,
+        "replay_start_node": node_id,
+        "kept_nodes": list(keep_nodes),
+        "status": "queued",
+    }
+
+
 # ─── Webhook receive ──────────────────────────────────────────────────────────
 
 async def receive_webhook(path_token: str, request, db: AsyncSession) -> dict:

@@ -134,6 +134,34 @@ async def _call_llm(provider: str, model: str, system: str, prompt: str, max_tok
     raise ValueError(f"Unknown AI provider: {provider}")
 
 
+async def _record_cost_if_available(config: dict, provider: str, model: str, prompt: str, text: str, latency_ms: int, db):
+    """Best-effort cost recording for LLM calls."""
+    try:
+        execution_id = config.get("_execution_id")
+        node_id = config.get("_node_id")
+        if not execution_id:
+            return
+        # Rough token estimation: ~4 chars per token
+        input_tokens = len(prompt) // 4
+        output_tokens = len(text) // 4
+        actual_model = model or (DEFAULT_ANTHROPIC_MODEL if provider == "anthropic" else DEFAULT_OPENAI_MODEL)
+
+        from core.cost_tracker import record_cost
+        await record_cost(
+            execution_id=execution_id,
+            node_id=node_id,
+            node_type=config.get("_node_type", "ai.chat"),
+            model=actual_model,
+            provider=provider,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            latency_ms=latency_ms,
+            db=db,
+        )
+    except Exception:
+        pass  # Cost recording is best-effort
+
+
 @register_node("ai.chat")
 async def ai_chat(config: dict, input_data: dict, credential_id: str, db) -> dict:
     provider = _pick_provider(config)
@@ -146,11 +174,15 @@ async def ai_chat(config: dict, input_data: dict, credential_id: str, db) -> dic
     if not prompt:
         raise ValueError("ai.chat requires a non-empty 'prompt'.")
 
+    import time as _time
+    _start = _time.monotonic()
     text = await _call_llm(provider, model, system_prompt, prompt, max_tokens, temperature)
+    _latency = int((_time.monotonic() - _start) * 1000)
 
-    return {"text": text, "provider": provider, "model": model or (
-        DEFAULT_ANTHROPIC_MODEL if provider == "anthropic" else DEFAULT_OPENAI_MODEL
-    )}
+    actual_model = model or (DEFAULT_ANTHROPIC_MODEL if provider == "anthropic" else DEFAULT_OPENAI_MODEL)
+    await _record_cost_if_available(config, provider, actual_model, prompt, text, _latency, db)
+
+    return {"text": text, "provider": provider, "model": actual_model}
 
 
 @register_node("ai.extract")

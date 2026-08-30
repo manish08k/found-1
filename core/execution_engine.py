@@ -234,6 +234,24 @@ async def execute_workflow(
             node_results: dict[str, Any] = dict(execution.node_results or {}) if resuming else {}
             context: dict[str, Any] = {"trigger": trigger_data}
 
+            # ── Policy / Guardrails check ────────────────────────────────
+            try:
+                from core.policy_engine import check_policies
+                policy_result = await check_policies(
+                    workflow_definition,
+                    {"org_id": org_id, "trigger_data": trigger_data, "execution_id": execution_id},
+                    db,
+                )
+                if not policy_result["passed"]:
+                    execution.status = ExecutionStatus.failed
+                    execution.error = "Policy violation: " + "; ".join(policy_result["violations"])
+                    execution.finished_at = datetime.utcnow()
+                    await db.commit()
+                    log.info("execution_blocked_by_policy", execution_id=execution_id, violations=policy_result["violations"])
+                    return
+            except Exception as policy_exc:
+                log.warning("policy_check_failed", execution_id=execution_id, error=str(policy_exc))
+
             try:
                 from api.middleware.rbac import WRITE_CAPABLE_NODE_TYPES, user_has_permission
                 from storage.models import User, Workflow as WorkflowModel
@@ -275,22 +293,21 @@ async def execute_workflow(
                     paused: ExecutionPaused | None = None
                     for node_id, res in zip(runnable_ids, results):
                         if isinstance(res, ExecutionPaused):
-                            # Don't mark this as an error and don't raise
-                            # yet — record the hold, let any OTHER nodes
-                            # in this same level finish first, then stop
-                            # before starting the next level at all.
                             node_results[node_id] = {"status": "waiting", "approval_id": res.approval_id}
                             paused = res
                         elif isinstance(res, Exception):
-                            node_results[node_id] = {
-                                "status": "error",
-                                "error": str(res),
-                            }
-                            # Check if node is marked required
+                            # node_results already populated by _run_node_tracked
+                            if node_id not in node_results or not isinstance(node_results[node_id], dict) or node_results[node_id].get("status") != "error":
+                                node_results[node_id] = {
+                                    "status": "error",
+                                    "error": str(res),
+                                }
                             if nodes_by_id[node_id].get("required", True):
                                 raise res
                         else:
-                            node_results[node_id] = {"status": "success", "output": res}
+                            # node_results already populated by _run_node_tracked with rich data
+                            if node_id not in node_results or not isinstance(node_results.get(node_id), dict) or "output" not in node_results.get(node_id, {}):
+                                node_results[node_id] = {"status": "success", "output": res}
 
                     if paused is not None:
                         execution.status = ExecutionStatus.waiting
@@ -313,19 +330,48 @@ async def execute_workflow(
 
 
 async def _run_node_tracked(node: dict, input_data: dict, db: AsyncSession, node_results: dict, workflow_owner_id: str | None = None, workflow_id: str | None = None, execution_id: str | None = None):
+    node_id = node["id"]
+    started_at = datetime.utcnow()
     start = time.monotonic()
+    retries = 0
     try:
         output = await _execute_node(node, input_data, db, workflow_owner_id, workflow_id, execution_id)
         duration_ms = int((time.monotonic() - start) * 1000)
-        log.info("node_success", node_id=node["id"], type=node.get("type"), duration_ms=duration_ms)
+        finished_at = datetime.utcnow()
+        log.info("node_success", node_id=node_id, type=node.get("type"), duration_ms=duration_ms)
+        # Store rich debug data in node_results
+        node_results[node_id] = {
+            "status": "success",
+            "output": output,
+            "input_data": input_data,
+            "output_data": output,
+            "started_at": started_at.isoformat(),
+            "finished_at": finished_at.isoformat(),
+            "duration_ms": duration_ms,
+            "retries": retries,
+            "error": None,
+        }
         return output
     except Exception as exc:
         duration_ms = int((time.monotonic() - start) * 1000)
+        finished_at = datetime.utcnow()
         if exc.__class__.__name__ == "ExecutionPaused":
-            log.info("node_paused", node_id=node["id"], type=node.get("type"), duration_ms=duration_ms)
+            log.info("node_paused", node_id=node_id, type=node.get("type"), duration_ms=duration_ms)
         else:
-            log.error("node_failed", node_id=node["id"], type=node.get("type"),
+            log.error("node_failed", node_id=node_id, type=node.get("type"),
                       duration_ms=duration_ms, error=str(exc))
+            # Store failure debug data
+            node_results[node_id] = {
+                "status": "error",
+                "error": str(exc),
+                "error_traceback": traceback.format_exc(),
+                "input_data": input_data,
+                "output_data": None,
+                "started_at": started_at.isoformat(),
+                "finished_at": finished_at.isoformat(),
+                "duration_ms": duration_ms,
+                "retries": retries,
+            }
         raise
 
 

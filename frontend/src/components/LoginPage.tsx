@@ -25,13 +25,19 @@ export default function LoginPage() {
   const [mfaSecret, setMfaSecret] = useState('')
   const [mfaUri, setMfaUri] = useState('')
 
-  // After Google OAuth callback, the URL will have ?google_token=...
-  // Pick it up and log the user in automatically
+  // After Google OAuth callback, the URL will have ?google_token=...&refresh_token=...
+  // Pick them up, store in localStorage, and log the user in automatically.
+  // OAuth error redirects (?error=...) are handled by App.tsx before this
+  // component mounts.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const googleToken = params.get('google_token')
+    const refreshToken = params.get('refresh_token')
     if (googleToken) {
       localStorage.setItem('token', googleToken)
+      if (refreshToken) {
+        localStorage.setItem('refresh_token', refreshToken)
+      }
       authApi.me().then(me => {
         setUser(me)
         toast.success('Signed in with Google!')
@@ -39,6 +45,8 @@ export default function LoginPage() {
       }).catch(() => {
         toast.error('Google sign-in failed, please try again')
         localStorage.removeItem('token')
+        localStorage.removeItem('refresh_token')
+        window.history.replaceState({}, '', '/')
       })
     }
   }, [])

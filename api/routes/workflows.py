@@ -273,7 +273,7 @@ def _serialize_workflow(w: Workflow) -> dict:
         "id": w.id,
         "name": w.name,
         "description": w.description,
-        "status": w.status,
+        "status": w.status.value if hasattr(w.status, 'value') else w.status,
         "definition": w.definition,
         "settings": w.settings,
         "created_at": w.created_at.isoformat(),

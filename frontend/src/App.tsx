@@ -21,8 +21,16 @@ export default function App() {
     }
     if (error) {
       window.history.replaceState({}, '', '/')
+      const errorMessages: Record<string, string> = {
+        google_auth_failed: 'Google sign-in failed. Please try again.',
+        invalid_state: 'Authentication session expired. Please try again.',
+        google_email_unverified: 'Your Google email address is not verified.',
+        account_disabled: 'Your account has been disabled.',
+      }
       setTimeout(() => {
-        import('react-hot-toast').then(({ default: toast }) => toast.error(`OAuth error: ${error}`))
+        import('react-hot-toast').then(({ default: toast }) =>
+          toast.error(errorMessages[error] || `OAuth error: ${error}`)
+        )
       }, 500)
     }
 

@@ -281,7 +281,7 @@ async def google_callback(
     db: AsyncSession = Depends(get_db),
 ):
     def _fail(reason: str) -> RedirectResponse:
-        return RedirectResponse(url=f"{settings.frontend_url}/login?error={reason}")
+        return RedirectResponse(url=f"{settings.frontend_url}/?error={reason}")
 
     if error or not code or not state:
         return _fail("google_auth_failed")
@@ -409,15 +409,22 @@ async def google_callback(
         ))
     await db.commit()
 
-    token = create_access_token(user.id, user.email)
-    redirect = RedirectResponse(url=f"{settings.frontend_url}/")
-    redirect.set_cookie(
-        key="oauth_token",
-        value=token,
-        httponly=True,
-        secure=not settings.DEBUG,
-        samesite="lax",
-        max_age=300,  # 5 minutes — SPA should exchange it immediately
-        path="/",
-    )
-    return redirect
+    # Issue a full session (access + refresh token) the same way
+    # email/password login does, so the frontend can store both in
+    # localStorage and the session survives past the 15-min access
+    # token lifetime.
+    #
+    # We pass the tokens as URL query parameters rather than HTTP-only
+    # cookies because the SPA uses Bearer-token auth for all API calls
+    # (see frontend/src/api/client.ts).  The redirect target is the
+    # frontend origin, and the SPA strips the params from the URL
+    # immediately after reading them.
+    access_token = create_access_token(user.id, user.email)
+    refresh = await create_refresh_token(db, user.id)
+    await db.commit()
+
+    params = urlencode({
+        "google_token": access_token,
+        "refresh_token": refresh,
+    })
+    return RedirectResponse(url=f"{settings.frontend_url}/?{params}")

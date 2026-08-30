@@ -115,9 +115,29 @@ app = FastAPI(
 app.add_middleware(IdempotencyMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+# CORS: allow_origins=["*"] with allow_credentials=True is invalid per
+# the CORS spec — browsers silently reject it. In debug mode we allow
+# common local dev origins; in production we allow only APP_BASE_URL
+# (and FRONTEND_URL if it differs, e.g. when the SPA is on a separate
+# domain/port from the API).
+_cors_origins: list[str] = []
+if settings.DEBUG:
+    _cors_origins = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        settings.APP_BASE_URL,
+    ]
+else:
+    _cors_origins = [settings.APP_BASE_URL]
+
+if settings.FRONTEND_URL and settings.FRONTEND_URL not in _cors_origins:
+    _cors_origins.append(settings.FRONTEND_URL)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if settings.DEBUG else [settings.APP_BASE_URL],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

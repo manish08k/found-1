@@ -42,7 +42,7 @@ async def browse(
     return [
         {
             "name": i.name, "slug": i.slug, "description": i.description,
-            "category": i.category, "tags": i.tags, "item_type": i.item_type,
+            "category": i.category, "tags": i.tags, "item_type": i.item_type.value,
             "downloads": i.downloads,
             "avg_rating": (i.rating / i.rating_count) if i.rating_count else 0,
             "is_verified": i.is_verified,
@@ -58,7 +58,7 @@ async def get_one(slug: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Item not found")
     return {
         "name": item.name, "slug": item.slug, "description": item.description,
-        "category": item.category, "tags": item.tags, "item_type": item.item_type,
+        "category": item.category, "tags": item.tags, "item_type": item.item_type.value,
         "content": item.content, "downloads": item.downloads,
         "avg_rating": (item.rating / item.rating_count) if item.rating_count else 0,
         "is_verified": item.is_verified,

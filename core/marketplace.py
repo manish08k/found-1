@@ -3,7 +3,7 @@ import re
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from storage.models import MarketplaceItem, Workflow, WorkflowStatus
+from storage.models import MarketplaceItem, MarketplaceItemType, Workflow, WorkflowStatus
 
 
 def _slugify(name: str) -> str:
@@ -16,7 +16,11 @@ async def list_items(db: AsyncSession, category: str | None = None, item_type: s
     if category:
         query = query.where(MarketplaceItem.category == category)
     if item_type:
-        query = query.where(MarketplaceItem.item_type == item_type)
+        try:
+            item_type_enum = MarketplaceItemType(item_type)
+        except ValueError:
+            item_type_enum = item_type  # let SQLAlchemy reject if truly invalid
+        query = query.where(MarketplaceItem.item_type == item_type_enum)
     if search:
         query = query.where(or_(
             MarketplaceItem.name.ilike(f"%{search}%"),
@@ -49,6 +53,13 @@ async def publish_item(db: AsyncSession, org_id: str | None, name: str, descript
     else:
         raise ValueError("An item with this name already exists")
 
+    # Coerce the string item_type to the enum so SQLAlchemy always
+    # receives a MarketplaceItemType, not a raw string.
+    try:
+        item_type_enum = MarketplaceItemType(item_type)
+    except ValueError:
+        raise ValueError(f"Invalid item type: {item_type}")
+
     item = MarketplaceItem(
         org_id=org_id,
         name=name,
@@ -56,7 +67,7 @@ async def publish_item(db: AsyncSession, org_id: str | None, name: str, descript
         description=description,
         category=category,
         tags=tags,
-        item_type=item_type,
+        item_type=item_type_enum,
         content=content,
         is_published=True,
     )

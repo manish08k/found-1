@@ -11,6 +11,7 @@ from storage.models import Execution, ExecutionStatus, Workflow, WorkflowStatus
 from api.middleware.auth import get_current_user
 from api.middleware.rbac import check_write_db_permission
 from core.plans import check_active_workflow_limit, check_execution_limit
+from core.marketplace import publish_item
 
 router = APIRouter()
 
@@ -217,6 +218,44 @@ async def manual_execute(
         queue="workflows",
     )
     return {"execution_id": execution.id, "status": "queued"}
+
+
+class PublishAsTemplateRequest(BaseModel):
+    name: Optional[str] = None          # defaults to the workflow name
+    description: Optional[str] = None
+    category: Optional[str] = None
+    tags: list[str] = []
+
+
+@router.post("/{workflow_id}/publish-as-template", status_code=201)
+async def publish_as_template(
+    workflow_id: str,
+    body: PublishAsTemplateRequest,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Publish the current workflow definition to the marketplace as a reusable template."""
+    workflow = await _get_owned_workflow(workflow_id, user.id, db)
+    name = body.name or workflow.name
+    description = body.description or workflow.description or ""
+    # Strip credential_id from every node before publishing — credentials
+    # are personal and must not be included in a shared template.
+    definition = dict(workflow.definition or {})
+    nodes = []
+    for node in definition.get("nodes", []):
+        n = dict(node)
+        n.pop("credential_id", None)
+        nodes.append(n)
+    definition["nodes"] = nodes
+    try:
+        item = await publish_item(
+            db, user.org_id, name, description,
+            body.category, body.tags, "template", definition,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await db.commit()
+    return {"slug": item.slug, "name": item.name}
 
 
 async def _get_owned_workflow(workflow_id: str, user_id: str, db: AsyncSession) -> Workflow:

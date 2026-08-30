@@ -123,6 +123,8 @@ export const workflowsApi = {
   deactivate: (id: string) => http.post(`/workflows/${id}/deactivate`).then(r => r.data),
   execute: (id: string, triggerData?: any) =>
     http.post(`/workflows/${id}/execute`, triggerData || {}).then(r => r.data),
+  publishAsTemplate: (id: string, data: { name?: string; description?: string; category?: string; tags?: string[] }) =>
+    http.post(`/workflows/${id}/publish-as-template`, data).then(r => r.data),
 }
 
 export const executionsApi = {

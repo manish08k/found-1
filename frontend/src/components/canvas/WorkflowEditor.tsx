@@ -7,7 +7,7 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import dagre from 'dagre'
-import { useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { workflowsApi, executionsApi } from '../../api/client'
 import { useStore } from '../../store'
 import { getNodeDef, PROVIDER_COLORS } from '../../types/nodes'
@@ -18,6 +18,11 @@ import ExecutionsPanel from '../panels/ExecutionsPanel'
 import TriggersPanel from '../panels/TriggersPanel'
 import type { WFNode } from '../../types'
 import toast from 'react-hot-toast'
+
+const TEMPLATE_CATEGORIES = [
+  'Notifications', 'Dev Tools', 'Reporting', 'CRM', 'E-commerce',
+  'Productivity', 'Monitoring', 'Billing', 'HR', 'Other',
+]
 
 const NODE_TYPES = { autoflow: AutoflowNode }
 
@@ -65,7 +70,7 @@ const EDGE_STYLE = {
 function EditorInner() {
   const qc = useQueryClient()
   const rf = useReactFlow()
-  const { activeWorkflow, setActiveWorkflow, credentials } = useStore()
+  const { activeWorkflow, setActiveWorkflow, credentials, setPage } = useStore()
   const [nodes, setNodes] = useState<Node[]>([])
   const [edges, setEdges] = useState<Edge[]>([])
   const [showPicker, setShowPicker] = useState(false)
@@ -73,8 +78,21 @@ function EditorInner() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [running, setRunning] = useState(false)
+  const [showPublish, setShowPublish] = useState(false)
+  const [publishForm, setPublishForm] = useState({ name: '', description: '', category: '', tags: '' })
   const pollRef = useRef<any>(null)
   const wf = activeWorkflow!
+
+  const publishMut = useMutation({
+    mutationFn: (data: { name?: string; description?: string; category?: string; tags?: string[] }) =>
+      workflowsApi.publishAsTemplate(wf.id, data),
+    onSuccess: (res: any) => {
+      toast.success(`Published "${res.name}" to the marketplace!`)
+      setShowPublish(false)
+      setPublishForm({ name: '', description: '', category: '', tags: '' })
+    },
+    onError: (e: any) => toast.error(e?.response?.data?.detail || 'Failed to publish'),
+  })
 
   useEffect(() => {
     const def = wf.definition ?? { nodes: [], edges: [] }
@@ -237,10 +255,72 @@ function EditorInner() {
         <button onClick={toggleActive} style={{ padding: '6px 14px', background: wf.status === 'active' ? 'rgba(239,68,68,0.1)' : 'rgba(124,58,237,0.1)', border: `1px solid ${wf.status === 'active' ? 'rgba(239,68,68,0.25)' : 'rgba(124,58,237,0.25)'}`, color: wf.status === 'active' ? 'var(--red)' : 'var(--accent)', borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
           {wf.status === 'active' ? 'Deactivate' : 'Activate'}
         </button>
+        <Btn onClick={() => { setPublishForm({ name: wf.name, description: wf.description || '', category: '', tags: '' }); setShowPublish(true) }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+          Share
+        </Btn>
         <button onClick={save} disabled={saving} style={{ padding: '6px 18px', background: 'var(--accent)', color: '#fff', borderRadius: 7, fontSize: 12, fontWeight: 700, border: 'none', cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? 0.7 : 1 }}>
           {saving ? 'Saving…' : 'Save'}
         </button>
       </div>
+
+      {/* Publish as Template modal */}
+      {showPublish && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}
+          onClick={e => { if (e.target === e.currentTarget) setShowPublish(false) }}>
+          <div style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 12, padding: 28, width: 460, maxWidth: '90vw' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+              <h3 style={{ fontWeight: 700, fontSize: 15, color: 'var(--text)' }}>Publish as Template</h3>
+              <button onClick={() => setShowPublish(false)} style={{ background: 'transparent', border: 'none', color: 'var(--text3)', cursor: 'pointer', padding: 4 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            <p style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 20, lineHeight: 1.6 }}>
+              Share this workflow with the community. Credentials and sensitive values are automatically removed before publishing.
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div>
+                <label style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 4, display: 'block', fontWeight: 500 }}>Template name *</label>
+                <input value={publishForm.name} onChange={e => setPublishForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Slack Notification on Webhook" />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 4, display: 'block', fontWeight: 500 }}>Description</label>
+                <textarea value={publishForm.description} onChange={e => setPublishForm(f => ({ ...f, description: e.target.value }))} placeholder="What does this workflow do? When should someone use it?" rows={3} />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 4, display: 'block', fontWeight: 500 }}>Category</label>
+                <select value={publishForm.category} onChange={e => setPublishForm(f => ({ ...f, category: e.target.value }))}>
+                  <option value="">Select a category…</option>
+                  {TEMPLATE_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 4, display: 'block', fontWeight: 500 }}>Tags <span style={{ opacity: 0.6 }}>(comma-separated)</span></label>
+                <input value={publishForm.tags} onChange={e => setPublishForm(f => ({ ...f, tags: e.target.value }))} placeholder="e.g. slack, webhook, alerting" />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 20, justifyContent: 'flex-end' }}>
+              <button onClick={() => setShowPublish(false)} style={{ padding: '8px 16px', background: 'var(--bg3)', color: 'var(--text2)', borderRadius: 8, border: '1px solid var(--border)', cursor: 'pointer', fontSize: 12 }}>
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (!publishForm.name.trim()) { toast.error('Template name is required'); return }
+                  publishMut.mutate({
+                    name: publishForm.name.trim(),
+                    description: publishForm.description.trim() || undefined,
+                    category: publishForm.category || undefined,
+                    tags: publishForm.tags ? publishForm.tags.split(',').map(t => t.trim()).filter(Boolean) : [],
+                  })
+                }}
+                disabled={publishMut.isPending || !publishForm.name.trim()}
+                style={{ padding: '8px 20px', background: 'var(--accent)', color: '#fff', borderRadius: 8, fontWeight: 600, fontSize: 12, border: 'none', cursor: 'pointer', opacity: publishMut.isPending || !publishForm.name.trim() ? 0.6 : 1 }}>
+                {publishMut.isPending ? 'Publishing…' : 'Publish to Marketplace'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Canvas + panels */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
@@ -265,11 +345,12 @@ function EditorInner() {
           </ReactFlow>
 
           {nodes.length === 0 && (
-            <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', gap: 16 }}>
+            <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, pointerEvents: 'none' }}>
               <div style={{ width: 72, height: 72, border: '2px dashed var(--border2)', borderRadius: 18, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" strokeWidth="1.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               </div>
               <p style={{ color: 'var(--text3)', fontSize: 14 }}>Click <strong style={{ color: 'var(--text2)' }}>Add Node</strong> to build your workflow</p>
+              <p style={{ color: 'var(--text3)', fontSize: 12 }}>or <strong style={{ color: 'var(--text2)', pointerEvents: 'all', cursor: 'pointer', textDecoration: 'underline' }} onClick={() => { setActiveWorkflow(null); setPage('marketplace') }}>browse ready-made templates</strong></p>
             </div>
           )}
         </div>

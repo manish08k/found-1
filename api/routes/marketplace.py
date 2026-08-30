@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.middleware.auth import get_current_user
-from api.middleware.rbac import require_permission
+from api.middleware.rbac import require_permission_or_personal
 from core.marketplace import (
     get_item, install_item, list_items, publish_item, rate_item, unpublish_item,
 )
@@ -45,6 +45,7 @@ async def browse(
             "category": i.category, "tags": i.tags, "item_type": i.item_type,
             "downloads": i.downloads,
             "avg_rating": (i.rating / i.rating_count) if i.rating_count else 0,
+            "is_verified": i.is_verified,
         }
         for i in items
     ]
@@ -60,6 +61,7 @@ async def get_one(slug: str, db: AsyncSession = Depends(get_db)):
         "category": item.category, "tags": item.tags, "item_type": item.item_type,
         "content": item.content, "downloads": item.downloads,
         "avg_rating": (item.rating / item.rating_count) if item.rating_count else 0,
+        "is_verified": item.is_verified,
     }
 
 
@@ -67,7 +69,7 @@ async def get_one(slug: str, db: AsyncSession = Depends(get_db)):
 async def publish(
     body: PublishRequest,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_permission("marketplace:publish")),
+    user: User = Depends(require_permission_or_personal("marketplace:publish")),
 ):
     try:
         item = await publish_item(
@@ -115,7 +117,7 @@ async def rate(
 async def unpublish(
     slug: str,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_permission("marketplace:publish")),
+    user: User = Depends(require_permission_or_personal("marketplace:publish")),
 ):
     try:
         await unpublish_item(db, slug, user.org_id)

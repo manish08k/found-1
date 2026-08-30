@@ -36,9 +36,17 @@ async def get_item(db: AsyncSession, slug: str) -> MarketplaceItem | None:
 
 async def publish_item(db: AsyncSession, org_id: str | None, name: str, description: str,
                         category: str, tags: list[str], item_type: str, content: dict) -> MarketplaceItem:
-    slug = _slugify(name)
-    existing = await db.execute(select(MarketplaceItem).where(MarketplaceItem.slug == slug))
-    if existing.scalar_one_or_none():
+    base_slug = _slugify(name)
+    # Try the base slug first; if taken, append a counter so the caller
+    # doesn't get a hard "name already exists" error when it's just a slug
+    # collision from a near-identical name.
+    slug = base_slug
+    for attempt in range(1, 100):
+        existing = await db.execute(select(MarketplaceItem).where(MarketplaceItem.slug == slug))
+        if not existing.scalar_one_or_none():
+            break
+        slug = f"{base_slug}-{attempt}"
+    else:
         raise ValueError("An item with this name already exists")
 
     item = MarketplaceItem(
@@ -104,12 +112,17 @@ async def rate_item(db: AsyncSession, slug: str, rating: int) -> MarketplaceItem
     return item
 
 
-async def unpublish_item(db: AsyncSession, slug: str, org_id: str) -> MarketplaceItem:
-    result = await db.execute(
-        select(MarketplaceItem).where(MarketplaceItem.slug == slug, MarketplaceItem.org_id == org_id)
-    )
+async def unpublish_item(db: AsyncSession, slug: str, org_id: str | None) -> MarketplaceItem:
+    query = select(MarketplaceItem).where(MarketplaceItem.slug == slug)
+    if org_id is not None:
+        query = query.where(MarketplaceItem.org_id == org_id)
+    else:
+        # Personal (no-org) users can only unpublish items they themselves
+        # published (org_id IS NULL items).
+        query = query.where(MarketplaceItem.org_id == None)  # noqa: E711
+    result = await db.execute(query)
     item = result.scalar_one_or_none()
     if not item:
-        raise ValueError("Item not found or not owned by your org")
+        raise ValueError("Item not found or not owned by you")
     item.is_published = False
     return item

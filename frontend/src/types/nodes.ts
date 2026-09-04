@@ -777,6 +777,115 @@ export const NODE_CATALOG: NodeDef[] = [
     { key: 'path', label: 'File/Folder Path', type: 'text', required: true },
     { key: 'visibility', label: 'Visibility', type: 'select', options: ['public', 'team_only', 'password'] },
   ] },
+
+  // ── WooCommerce ─────────────────────────────────────────────────────────────
+  { type: 'woocommerce.list_orders', label: 'List Orders', category: 'WooCommerce', provider: 'woocommerce', color: '#7f54b3', description: 'List WooCommerce orders with optional filters', configFields: [
+    { key: 'status', label: 'Status', type: 'select', options: ['any', 'pending', 'processing', 'on-hold', 'completed', 'cancelled', 'refunded', 'failed', 'trash'] },
+    { key: 'per_page', label: 'Per Page (max 100)', type: 'number', placeholder: '10' },
+    { key: 'page', label: 'Page', type: 'number', placeholder: '1' },
+  ] },
+  { type: 'woocommerce.get_order', label: 'Get Order', category: 'WooCommerce', provider: 'woocommerce', color: '#7f54b3', description: 'Fetch a single WooCommerce order', configFields: [
+    { key: 'order_id', label: 'Order ID', type: 'text', required: true },
+  ] },
+  { type: 'woocommerce.update_order', label: 'Update Order', category: 'WooCommerce', provider: 'woocommerce', color: '#7f54b3', description: 'Update a WooCommerce order status or notes', configFields: [
+    { key: 'order_id', label: 'Order ID', type: 'text', required: true },
+    { key: 'status', label: 'Status', type: 'select', options: ['pending', 'processing', 'on-hold', 'completed', 'cancelled', 'refunded', 'failed'] },
+    { key: 'customer_note', label: 'Customer Note', type: 'textarea' },
+  ] },
+  { type: 'woocommerce.create_order', label: 'Create Order', category: 'WooCommerce', provider: 'woocommerce', color: '#7f54b3', description: 'Create a new WooCommerce order', configFields: [
+    { key: 'order', label: 'Order (JSON)', type: 'json', required: true },
+  ] },
+  { type: 'woocommerce.list_products', label: 'List Products', category: 'WooCommerce', provider: 'woocommerce', color: '#7f54b3', description: 'List WooCommerce products', configFields: [
+    { key: 'status', label: 'Status', type: 'select', options: ['any', 'draft', 'pending', 'private', 'publish'] },
+    { key: 'search', label: 'Search', type: 'text' },
+    { key: 'per_page', label: 'Per Page (max 100)', type: 'number', placeholder: '10' },
+  ] },
+  { type: 'woocommerce.get_product', label: 'Get Product', category: 'WooCommerce', provider: 'woocommerce', color: '#7f54b3', description: 'Fetch a single WooCommerce product', configFields: [
+    { key: 'product_id', label: 'Product ID', type: 'text', required: true },
+  ] },
+  { type: 'woocommerce.create_product', label: 'Create Product', category: 'WooCommerce', provider: 'woocommerce', color: '#7f54b3', description: 'Create a new product in WooCommerce', configFields: [
+    { key: 'product', label: 'Product (JSON)', type: 'json', required: true },
+  ] },
+  { type: 'woocommerce.update_product', label: 'Update Product', category: 'WooCommerce', provider: 'woocommerce', color: '#7f54b3', description: 'Update a WooCommerce product', configFields: [
+    { key: 'product_id', label: 'Product ID', type: 'text', required: true },
+    { key: 'name', label: 'Name', type: 'text' },
+    { key: 'regular_price', label: 'Regular Price', type: 'text' },
+    { key: 'stock_quantity', label: 'Stock Quantity', type: 'number' },
+    { key: 'status', label: 'Status', type: 'select', options: ['draft', 'pending', 'private', 'publish'] },
+  ] },
+  { type: 'woocommerce.list_customers', label: 'List Customers', category: 'WooCommerce', provider: 'woocommerce', color: '#7f54b3', description: 'List WooCommerce customers', configFields: [
+    { key: 'search', label: 'Search', type: 'text' },
+    { key: 'email', label: 'Filter by Email', type: 'text' },
+    { key: 'per_page', label: 'Per Page', type: 'number', placeholder: '10' },
+  ] },
+  { type: 'woocommerce.create_customer', label: 'Create Customer', category: 'WooCommerce', provider: 'woocommerce', color: '#7f54b3', description: 'Create a new WooCommerce customer', configFields: [
+    { key: 'email', label: 'Email', type: 'text', required: true },
+    { key: 'first_name', label: 'First Name', type: 'text' },
+    { key: 'last_name', label: 'Last Name', type: 'text' },
+  ] },
+  { type: 'woocommerce.get_sales_report', label: 'Get Sales Report', category: 'WooCommerce', provider: 'woocommerce', color: '#7f54b3', description: 'Retrieve WooCommerce sales totals', configFields: [
+    { key: 'period', label: 'Period', type: 'select', options: ['week', 'month', 'last_month', 'year'] },
+    { key: 'date_min', label: 'Date Min (YYYY-MM-DD)', type: 'text' },
+    { key: 'date_max', label: 'Date Max (YYYY-MM-DD)', type: 'text' },
+  ] },
+
+  // ── Webex ────────────────────────────────────────────────────────────────────
+  { type: 'webex.send_message', label: 'Send Message', category: 'Webex', provider: 'webex', color: '#00bceb', description: 'Send a Webex message to a room or person', configFields: [
+    { key: 'roomId', label: 'Room ID (or toPersonEmail)', type: 'text' },
+    { key: 'toPersonEmail', label: 'To Person Email', type: 'text' },
+    { key: 'text', label: 'Text', type: 'textarea' },
+    { key: 'markdown', label: 'Markdown', type: 'textarea' },
+  ] },
+  { type: 'webex.list_rooms', label: 'List Rooms', category: 'Webex', provider: 'webex', color: '#00bceb', description: 'List Webex rooms the user belongs to', configFields: [
+    { key: 'max', label: 'Max Results', type: 'number', placeholder: '20' },
+    { key: 'type', label: 'Type', type: 'select', options: ['direct', 'group'] },
+  ] },
+  { type: 'webex.create_room', label: 'Create Room', category: 'Webex', provider: 'webex', color: '#00bceb', description: 'Create a new Webex room/space', configFields: [
+    { key: 'title', label: 'Title', type: 'text', required: true },
+    { key: 'teamId', label: 'Team ID (optional)', type: 'text' },
+  ] },
+  { type: 'webex.list_messages', label: 'List Messages', category: 'Webex', provider: 'webex', color: '#00bceb', description: 'List messages in a Webex room', configFields: [
+    { key: 'roomId', label: 'Room ID', type: 'text', required: true },
+    { key: 'max', label: 'Max Results', type: 'number', placeholder: '50' },
+  ] },
+  { type: 'webex.get_me', label: 'Get My Profile', category: 'Webex', provider: 'webex', color: '#00bceb', description: 'Fetch the authenticated Webex user profile', configFields: [] },
+  { type: 'webex.list_people', label: 'Search People', category: 'Webex', provider: 'webex', color: '#00bceb', description: 'Search Webex users by email or name', configFields: [
+    { key: 'email', label: 'Email', type: 'text' },
+    { key: 'displayName', label: 'Display Name', type: 'text' },
+  ] },
+  { type: 'webex.create_meeting', label: 'Create Meeting', category: 'Webex', provider: 'webex', color: '#00bceb', description: 'Schedule a Webex meeting', configFields: [
+    { key: 'title', label: 'Title', type: 'text', required: true },
+    { key: 'start', label: 'Start (ISO 8601)', type: 'text', required: true },
+    { key: 'end', label: 'End (ISO 8601)', type: 'text', required: true },
+    { key: 'timezone', label: 'Timezone', type: 'text', placeholder: 'UTC' },
+  ] },
+
+  // ── RingCentral ─────────────────────────────────────────────────────────────
+  { type: 'ringcentral.send_sms', label: 'Send SMS', category: 'RingCentral', provider: 'ringcentral', color: '#f36f23', description: 'Send an SMS via RingCentral', configFields: [
+    { key: 'from', label: 'From (E.164)', type: 'text', required: true, placeholder: '+14155552671' },
+    { key: 'to', label: 'To (E.164)', type: 'text', required: true, placeholder: '+19999999999' },
+    { key: 'text', label: 'Message Text', type: 'textarea', required: true },
+  ] },
+  { type: 'ringcentral.list_messages', label: 'List Messages', category: 'RingCentral', provider: 'ringcentral', color: '#f36f23', description: 'List RingCentral message store entries', configFields: [
+    { key: 'messageType', label: 'Type', type: 'select', options: ['SMS', 'Fax', 'VoiceMail', 'Pager', 'Text'] },
+    { key: 'direction', label: 'Direction', type: 'select', options: ['Inbound', 'Outbound'] },
+    { key: 'perPage', label: 'Per Page', type: 'number', placeholder: '20' },
+  ] },
+  { type: 'ringcentral.get_call_log', label: 'Get Call Log', category: 'RingCentral', provider: 'ringcentral', color: '#f36f23', description: 'Retrieve RingCentral call log records', configFields: [
+    { key: 'dateFrom', label: 'Date From (ISO 8601)', type: 'text' },
+    { key: 'dateTo', label: 'Date To (ISO 8601)', type: 'text' },
+    { key: 'direction', label: 'Direction', type: 'select', options: ['Inbound', 'Outbound'] },
+    { key: 'perPage', label: 'Per Page', type: 'number', placeholder: '20' },
+  ] },
+  { type: 'ringcentral.make_call', label: 'Make Call (Ring Out)', category: 'RingCentral', provider: 'ringcentral', color: '#f36f23', description: 'Initiate a 2-leg RingCentral call', configFields: [
+    { key: 'from', label: 'From (E.164)', type: 'text', required: true },
+    { key: 'to', label: 'To (E.164)', type: 'text', required: true },
+  ] },
+  { type: 'ringcentral.list_extensions', label: 'List Extensions', category: 'RingCentral', provider: 'ringcentral', color: '#f36f23', description: 'List all extensions in the account', configFields: [
+    { key: 'status', label: 'Status', type: 'select', options: ['Enabled', 'Disabled', 'Frozen', 'NotActivated', 'Unassigned'] },
+    { key: 'perPage', label: 'Per Page', type: 'number', placeholder: '100' },
+  ] },
+  { type: 'ringcentral.get_account_info', label: 'Get Account Info', category: 'RingCentral', provider: 'ringcentral', color: '#f36f23', description: 'Retrieve RingCentral account details', configFields: [] },
 ]
 
 import { AGENTFLOW_NODES } from '../catalog/agentflow_nodes'

@@ -443,13 +443,14 @@ async def transform_html_to_text(config: dict, input_data: dict, credential_id: 
 @register_node("transform.markdown_to_html")
 async def transform_markdown_to_html(config: dict, input_data: dict, credential_id: str, db) -> dict:
     """Convert Markdown to HTML."""
-    import markdown  # markdown-it-py or markdown in requirements
+    from markdown_it import MarkdownIt
 
     field = config.get("field", "markdown")
     md_str = input_data.get(field) if isinstance(input_data, dict) else input_data
     if not isinstance(md_str, str):
         raise ValueError(f"transform.markdown_to_html: field '{field}' is not a string")
-    html = markdown.markdown(md_str, extensions=config.get("extensions", ["extra", "nl2br"]))
+    md = MarkdownIt()
+    html = md.render(md_str)
     return {"html": html}
 
 

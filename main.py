@@ -104,6 +104,99 @@ import integrations.flow_control.handler
 import integrations.activecampaign.handler
 import integrations.klaviyo.handler
 import integrations.sendgrid.handler
+import integrations.woocommerce.handler
+import integrations.webex.handler
+import integrations.ringcentral.handler
+# Analytics / data
+import integrations.algolia.handler
+import integrations.mixpanel.handler
+import integrations.segment.handler
+import integrations.posthog.handler
+import integrations.datadog.handler
+import integrations.metabase.handler
+import integrations.elastic.handler
+import integrations.snowflake.handler
+import integrations.mongodb.handler
+import integrations.supabase.handler
+import integrations.nocodb.handler
+# Email / messaging
+import integrations.mailgun.handler
+import integrations.mailjet.handler
+import integrations.mailerlite.handler
+import integrations.brevo.handler
+import integrations.convertkit.handler
+import integrations.getresponse.handler
+import integrations.resend.handler
+import integrations.postmark.handler
+import integrations.messagebird.handler
+import integrations.plivo.handler
+import integrations.mattermost.handler
+import integrations.rocketchat.handler
+import integrations.zulip.handler
+# Social / community
+import integrations.twitter.handler
+import integrations.linkedin.handler
+import integrations.reddit.handler
+import integrations.discord.handler
+# CRM / sales
+import integrations.helpscout.handler
+import integrations.clearbit.handler
+import integrations.hunter.handler
+# Project management / dev
+import integrations.clickup.handler
+import integrations.gitlab.handler
+import integrations.jenkins.handler
+import integrations.circleci.handler
+import integrations.github.handler
+# HR / operations
+import integrations.bamboohr.handler
+import integrations.harvest.handler
+import integrations.toggl.handler
+import integrations.clockify.handler
+import integrations.invoiceninja.handler
+# E-commerce / payments
+import integrations.shopify.handler
+import integrations.paddle.handler
+import integrations.paypal.handler
+import integrations.razorpay.handler
+import integrations.square.handler
+import integrations.chargebee.handler
+import integrations.quickbooks.handler
+import integrations.xero.handler
+# Marketing / forms
+import integrations.surveymonkey.handler
+import integrations.typeform.handler
+import integrations.calendly.handler
+import integrations.eventbrite.handler
+# Content / CMS
+import integrations.wordpress.handler
+import integrations.ghost.handler
+import integrations.contentful.handler
+import integrations.strapi.handler
+import integrations.webflow.handler
+# Design / media
+import integrations.figma.handler
+import integrations.cloudinary.handler
+import integrations.elevenlabs.handler
+# DevOps / infra
+import integrations.netlify.handler
+import integrations.uptime_robot.handler
+import integrations.rabbitmq.handler
+# Productivity
+import integrations.todoist.handler
+import integrations.spotify.handler
+# AI / translation
+import integrations.deepl.handler
+import integrations.coingecko.handler
+# Identity / access
+import integrations.okta.handler
+# ITSM
+import integrations.freshservice.handler
+import integrations.servicenow.handler
+# Misc
+import integrations.bamboohr.handler
+import integrations.browser.handler
+import integrations.microsoft_teams.handler
 
 log = structlog.get_logger(__name__)
 

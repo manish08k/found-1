@@ -96,7 +96,7 @@ async def datetime_now(config: dict, input_data: dict, credential_id: str, db) -
 @register_node("datetime.parse")
 async def datetime_parse(config: dict, input_data: dict, credential_id: str, db) -> dict:
     """Parse a date string into structured fields."""
-    value = config.get("value") or input_data.get("value")
+    value = config.get("value") if config.get("value") is not None else input_data.get("value")
     if value is None:
         raise ValueError("datetime.parse: 'value' is required")
     fmt = config.get("format", "auto")
@@ -112,7 +112,7 @@ async def datetime_parse(config: dict, input_data: dict, credential_id: str, db)
 @register_node("datetime.format")
 async def datetime_format(config: dict, input_data: dict, credential_id: str, db) -> dict:
     """Format a timestamp (ISO string or unix) using a strftime format string."""
-    value = config.get("value") or input_data.get("value")
+    value = config.get("value") if config.get("value") is not None else input_data.get("value")
     if value is None:
         raise ValueError("datetime.format: 'value' is required")
     fmt = config.get("format", "%Y-%m-%d %H:%M:%S")

@@ -17,7 +17,45 @@ router = APIRouter()
 # connection fields or a static key instead, which we encrypt and store
 # the same way (envelope encryption, credentials/envelope.py).
 MANUAL_PROVIDERS = {"postgres", "mysql", "sqlite"}
-API_KEY_PROVIDERS = {"stripe", "sendgrid", "twilio", "jira", "trello", "pagerduty", "asana", "aws_s3", "mcp"}
+API_KEY_PROVIDERS = {
+    # Original
+    "stripe", "sendgrid", "twilio", "jira", "trello", "pagerduty", "asana", "aws_s3", "mcp",
+    "woocommerce", "webex", "ringcentral",
+    # Analytics / data
+    "algolia", "mixpanel", "segment", "posthog", "datadog", "metabase", "elastic", "snowflake",
+    "nocodb",
+    # Email / messaging
+    "mailgun", "mailjet", "mailerlite", "brevo", "convertkit", "getresponse", "resend",
+    "postmark", "messagebird", "plivo", "mattermost", "rocketchat", "zulip",
+    # Social
+    "twitter", "linkedin", "reddit",
+    # CRM / sales
+    "helpscout", "clearbit", "hunter",
+    # Dev / project mgmt
+    "clickup", "gitlab", "jenkins", "circleci",
+    # HR / operations
+    "bamboohr", "harvest", "toggl", "clockify", "invoiceninja",
+    # E-commerce / payments
+    "shopify", "paddle", "paypal", "razorpay", "square", "chargebee", "quickbooks", "xero",
+    # Marketing / forms
+    "surveymonkey", "calendly", "eventbrite",
+    # Content / CMS
+    "wordpress", "ghost", "contentful", "strapi", "webflow",
+    # Design / media
+    "figma", "cloudinary", "elevenlabs",
+    # DevOps / infra
+    "netlify", "uptime_robot", "rabbitmq",
+    # Productivity
+    "todoist", "spotify",
+    # AI / misc
+    "deepl", "coingecko",
+    # Identity
+    "okta",
+    # ITSM
+    "freshservice", "servicenow",
+    # Misc
+    "microsoft_teams", "supabase", "mongodb",
+}
 
 
 class CredentialRename(BaseModel):
@@ -170,6 +208,78 @@ async def test_credential(
                 "asana": _test_asana,
                 "aws_s3": _test_aws_s3,
                 "mcp": _test_mcp,
+                "woocommerce": _test_woocommerce,
+                "webex": _test_webex,
+                "ringcentral": _test_ringcentral,
+                "algolia": _test_algolia,
+                "mixpanel": _test_mixpanel,
+                "segment": _test_segment,
+                "posthog": _test_posthog,
+                "datadog": _test_datadog,
+                "metabase": _test_metabase,
+                "elastic": _test_elastic,
+                "snowflake": _test_snowflake,
+                "nocodb": _test_nocodb,
+                "mailgun": _test_mailgun,
+                "mailjet": _test_mailjet,
+                "mailerlite": _test_mailerlite,
+                "brevo": _test_brevo,
+                "convertkit": _test_convertkit,
+                "getresponse": _test_getresponse,
+                "resend": _test_resend,
+                "postmark": _test_postmark,
+                "messagebird": _test_messagebird,
+                "plivo": _test_plivo,
+                "mattermost": _test_mattermost,
+                "rocketchat": _test_rocketchat,
+                "zulip": _test_zulip,
+                "twitter": _test_twitter,
+                "linkedin": _test_linkedin,
+                "reddit": _test_reddit,
+                "helpscout": _test_helpscout,
+                "clearbit": _test_clearbit,
+                "hunter": _test_hunter,
+                "clickup": _test_clickup,
+                "gitlab": _test_gitlab,
+                "jenkins": _test_jenkins,
+                "circleci": _test_circleci,
+                "bamboohr": _test_bamboohr,
+                "harvest": _test_harvest,
+                "toggl": _test_toggl,
+                "clockify": _test_clockify,
+                "invoiceninja": _test_invoiceninja,
+                "shopify": _test_shopify,
+                "paddle": _test_paddle,
+                "paypal": _test_paypal,
+                "razorpay": _test_razorpay,
+                "square": _test_square,
+                "chargebee": _test_chargebee,
+                "quickbooks": _test_quickbooks,
+                "xero": _test_xero,
+                "surveymonkey": _test_surveymonkey,
+                "calendly": _test_calendly,
+                "eventbrite": _test_eventbrite,
+                "wordpress": _test_wordpress,
+                "ghost": _test_ghost,
+                "contentful": _test_contentful,
+                "strapi": _test_strapi,
+                "webflow": _test_webflow,
+                "figma": _test_figma,
+                "cloudinary": _test_cloudinary,
+                "elevenlabs": _test_elevenlabs,
+                "netlify": _test_netlify,
+                "uptime_robot": _test_uptime_robot,
+                "rabbitmq": _test_rabbitmq,
+                "todoist": _test_todoist,
+                "spotify": _test_spotify,
+                "deepl": _test_deepl,
+                "coingecko": _test_coingecko,
+                "okta": _test_okta,
+                "freshservice": _test_freshservice,
+                "servicenow": _test_servicenow,
+                "microsoft_teams": _test_microsoft_teams,
+                "supabase": _test_supabase,
+                "mongodb": _test_mongodb,
             }[cred.provider]
             await test_fn(creds)
         else:
@@ -225,6 +335,21 @@ async def _test_aws_s3(creds: dict) -> None:
 
 async def _test_mcp(creds: dict) -> None:
     from integrations.mcp_.handler import test_connection
+    await test_connection(creds)
+
+
+async def _test_woocommerce(creds: dict) -> None:
+    from integrations.woocommerce.handler import test_connection
+    await test_connection(creds)
+
+
+async def _test_webex(creds: dict) -> None:
+    from integrations.webex.handler import test_connection
+    await test_connection(creds)
+
+
+async def _test_ringcentral(creds: dict) -> None:
+    from integrations.ringcentral.handler import test_connection
     await test_connection(creds)
 
 

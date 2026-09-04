@@ -1,12 +1,23 @@
 {
   "permissions": {
-    "defaultMode": "acceptEdits",
     "allow": [
       "Bash(python3 -m py_compile main.py)",
       "Bash(python3 -m py_compile storage/models.py)",
       "Bash(python3 -m py_compile core/execution_engine.py)",
       "Bash(python3 -m py_compile core/cost_tracker.py)",
-      "Bash(python3 -m py_compile core/evaluator.py)"
-    ]
+      "Bash(python3 -m py_compile core/evaluator.py)",
+      "Bash(find /Users/manish/found-1-main -type f \\\\\\( -name \"*.py\" -o -name \"*.tsx\" -o -name \"*.ts\" \\\\\\) ! -path \"*/node_modules/*\" ! -path \"*/__pycache__/*\" -exec grep -l \"TODO\\\\|FIXME\\\\|PLACEHOLDER\\\\|placeholder\" {} \\\\;)",
+      "Bash(wc -l /Users/manish/found-1-main/integrations/*/handler.py)",
+      "Bash(find /Users/manish/found-1-main/integrations -mindepth 1 -maxdepth 1 -type d -exec bash -c 'echo -n \"{}: \"; ls {} | wc -l' \\\\;)",
+      "Bash(sort -t: -k2 -n)",
+      "Bash(wc -l /Users/manish/found-1-main/frontend/src/components/pages/*.tsx)",
+      "Bash(pip install:*)",
+      "Bash(python -m pytest tests/ --tb=short -q)",
+      "Bash(python:*)",
+      "Bash(npm run:*)",
+      "Bash(npm install:*)",
+      "Bash(grep -v \"^$\")"
+    ],
+    "defaultMode": "acceptEdits"
   }
 }

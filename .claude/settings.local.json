@@ -16,7 +16,8 @@
       "Bash(python:*)",
       "Bash(npm run:*)",
       "Bash(npm install:*)",
-      "Bash(grep -v \"^$\")"
+      "Bash(grep -v \"^$\")",
+      "Bash(python3:*)"
     ],
     "defaultMode": "acceptEdits"
   }

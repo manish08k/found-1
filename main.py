@@ -197,6 +197,41 @@ import integrations.servicenow.handler
 import integrations.bamboohr.handler
 import integrations.browser.handler
 import integrations.microsoft_teams.handler
+# Batch 1-4 new integrations
+import integrations.databricks.handler
+import integrations.datatable.handler
+import integrations.debug_helper.handler
+import integrations.demio.handler
+import integrations.dhl.handler
+import integrations.discourse.handler
+import integrations.disqus.handler
+import integrations.drift.handler
+import integrations.dropcontact.handler
+import integrations.spreadsheet_file.handler
+import integrations.sse_trigger.handler
+import integrations.taiga.handler
+import integrations.tapfiliate.handler
+import integrations.twake.handler
+import integrations.twist.handler
+import integrations.unleashedsoftware.handler
+import integrations.uplead.handler
+import integrations.mysql.handler
+import integrations.postgres.handler
+import integrations.uproc.handler
+import integrations.urlscanio.handler
+import integrations.venafi.handler
+import integrations.vero.handler
+import integrations.vonage.handler
+import integrations.wait.handler
+import integrations.webhook.handler
+import integrations.wekan.handler
+import integrations.wise.handler
+import integrations.workflow_trigger.handler
+import integrations.write_binary_file.handler
+import integrations.wufoo.handler
+import integrations.xml.handler
+import integrations.yourls.handler
+import integrations.zammad.handler
 
 log = structlog.get_logger(__name__)
 

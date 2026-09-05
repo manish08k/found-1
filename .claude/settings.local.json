@@ -17,7 +17,9 @@
       "Bash(npm run:*)",
       "Bash(npm install:*)",
       "Bash(grep -v \"^$\")",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(ls -lh /Users/manish/found-1-main/integrations/*/handler.py)",
+      "Bash(sort -k2 -h)"
     ],
     "defaultMode": "acceptEdits"
   }

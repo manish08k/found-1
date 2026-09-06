@@ -23,5 +23,17 @@ async def griptape_run_pipeline(config: dict, input_data: dict, credential_id: s
 
 @register_node("griptape.run_agent")
 async def griptape_run_agent(config: dict, input_data: dict, credential_id: str, db) -> dict:
+    """Run a Griptape agent with tool use."""
     merged = {**config, **input_data}
-    return {"input": merged.get("input", ""), "output": "Agent response placeholder", "status": "completed"}
+    try:
+        from griptape.structures import Agent
+        from griptape.drivers import OpenAiChatPromptDriver
+        driver = OpenAiChatPromptDriver(
+            api_key=merged.get("openai_api_key", ""),
+            model=merged.get("model", "gpt-4"),
+        )
+        agent = Agent(prompt_driver=driver)
+        result = agent.run(merged.get("input", ""))
+        return {"output": str(result.output_task.output), "status": "completed"}
+    except ImportError:
+        return {"error": "griptape not installed", "status": "failed"}

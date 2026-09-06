@@ -1,0 +1,73 @@
+"""Chat Data chatbot training platform — handler for chat_data integration."""
+import httpx
+import structlog
+
+from core.execution_engine import register_node
+
+log = structlog.get_logger(__name__)
+
+BASE_URL = "https://api.chat-data.com/api/v2"
+
+
+@register_node("chat_data.create_chatbot")
+async def chat_data_create_chatbot(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """Create a chatbot.
+
+    config/input_data:
+      api_key — API key or token (required)
+      name — (required)
+    """
+    merged = {**config, **input_data}
+    api_key = merged.get("api_key") or merged.get("api_token") or ""
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    name = merged.get("name") or ""
+    if not name:
+        raise ValueError("name required for chat_data.create_chatbot")
+    payload = {"name": name}
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(f"{BASE_URL}/chatbots", headers=headers, json=payload)
+        r.raise_for_status()
+        data = r.json()
+    log.info("chat_data.create_chatbot")
+    return {"data": data}
+
+@register_node("chat_data.query_chatbot")
+async def chat_data_query_chatbot(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """Chat with a bot.
+
+    config/input_data:
+      api_key — API key or token (required)
+      chatbot_id — (required)
+      message — (required)
+    """
+    merged = {**config, **input_data}
+    api_key = merged.get("api_key") or merged.get("api_token") or ""
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    chatbot_id = merged.get("chatbot_id") or ""
+    message = merged.get("message") or ""
+    if not chatbot_id or not message:
+        raise ValueError("chatbot_id, message required for chat_data.query_chatbot")
+    payload = {"message": message}
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(f"{BASE_URL}/chatbots/{chatbot_id}/chat", headers=headers, json=payload)
+        r.raise_for_status()
+        data = r.json()
+    log.info("chat_data.query_chatbot")
+    return {"data": data}
+
+@register_node("chat_data.list_chatbots")
+async def chat_data_list_chatbots(config: dict, input_data: dict, credential_id: str | None, db) -> dict:
+    """List chatbots.
+
+    config/input_data:
+      api_key — API key or token (required)
+    """
+    merged = {**config, **input_data}
+    api_key = merged.get("api_key") or merged.get("api_token") or ""
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(f"{BASE_URL}/chatbots", headers=headers)
+        r.raise_for_status()
+        data = r.json()
+    log.info("chat_data.list_chatbots")
+    return {"data": data}

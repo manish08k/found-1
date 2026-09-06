@@ -232,6 +232,7 @@ services:
       - "9090:9090"
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
 
   alertmanager:
     image: prom/alertmanager:v0.27.0
@@ -262,7 +263,6 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_secret}
     depends_on:
       - redis
-      - "--storage.tsdb.retention.time=30d"
 
   # ─── Tempo (traces) ───────────────────────────────────────────────────────────
   tempo:

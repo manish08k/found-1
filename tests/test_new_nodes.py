@@ -1986,13 +1986,14 @@ class TestFlowDelay:
 
     @pytest.mark.asyncio
     async def test_delay_capped_at_300(self):
-        result = await flow_delay(
-            config={"seconds": 9999},
-            # Use 0 sleep implicitly — we just check the cap, not actual sleep
-            input_data={},
-            credential_id=CRED,
-            db=DB,
-        )
+        from unittest.mock import patch, AsyncMock as _AsyncMock
+        with patch("integrations.flow_control.handler.asyncio.sleep", new_callable=_AsyncMock):
+            result = await flow_delay(
+                config={"seconds": 9999},
+                input_data={},
+                credential_id=CRED,
+                db=DB,
+            )
         assert result["__delayed_seconds__"] == 300
 
     @pytest.mark.asyncio

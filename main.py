@@ -232,6 +232,89 @@ import integrations.wufoo.handler
 import integrations.xml.handler
 import integrations.yourls.handler
 import integrations.zammad.handler
+# Microsoft suite
+import integrations.microsoft_365_people.handler
+import integrations.microsoft_365_planner.handler
+import integrations.microsoft_copilot.handler
+import integrations.microsoft_dynamics_365_business_central.handler
+import integrations.microsoft_dynamics_crm.handler
+import integrations.microsoft_excel_365.handler
+import integrations.microsoft_onedrive.handler
+import integrations.microsoft_onenote.handler
+import integrations.microsoft_outlook.handler
+import integrations.microsoft_outlook_calendar.handler
+import integrations.microsoft_power_bi.handler
+import integrations.microsoft_sharepoint.handler
+import integrations.microsoft_sql_server.handler
+import integrations.microsoft_todo.handler
+# Form integrations
+import integrations.formbricks.handler
+import integrations.formitable.handler
+import integrations.formsite.handler
+import integrations.formspark.handler
+import integrations.fillout_forms.handler
+import integrations.cognito_forms.handler
+import integrations.gravityforms.handler
+import integrations.kizeo_forms.handler
+import integrations.opnform.handler
+import integrations.paperform.handler
+import integrations.feathery.handler
+# Email/data verification
+import integrations.gender_api.handler
+import integrations.generatebanners.handler
+import integrations.millionverifier.handler
+import integrations.neverbounce.handler
+import integrations.phone_validator.handler
+import integrations.reon_verifier.handler
+import integrations.zerobounce.handler
+import integrations.validatedemails.handler
+# Cloud / developer tools
+import integrations.azure_ad.handler
+import integrations.azure_devops.handler
+import integrations.gitea.handler
+import integrations.glide.handler
+import integrations.google_bigquery.handler
+import integrations.greenhouse.handler
+import integrations.greip.handler
+import integrations.hashi_corp_vault.handler
+import integrations.intruder.handler
+# Document / PDF tools
+import integrations.carbone.handler
+import integrations.cloudconvert.handler
+import integrations.docusign.handler
+import integrations.duckdb.handler
+import integrations.filetopdf.handler
+import integrations.pdfmonkey.handler
+import integrations.placid.handler
+import integrations.sign_now.handler
+# CRM / sales / e-commerce
+import integrations.apitable.handler
+import integrations.bigcommerce.handler
+import integrations.canva.handler
+import integrations.clearouphone.handler
+import integrations.couchbase.handler
+import integrations.coupa.handler
+import integrations.cyberark.handler
+import integrations.dub.handler
+import integrations.netsuite.handler
+import integrations.paywhirl.handler
+import integrations.photoroom.handler
+import integrations.pinch_payments.handler
+import integrations.sap_ariba.handler
+import integrations.tally.handler
+import integrations.lever.handler
+import integrations.pandadoc.handler
+import integrations.productboard.handler
+import integrations.retable.handler
+import integrations.saleor.handler
+import integrations.serp_api.handler
+import integrations.shippo.handler
+import integrations.short_io.handler
+# Video / media
+import integrations.vidlab7.handler
+import integrations.vidnoz.handler
+# HR / operations
+import integrations.workday.handler
 
 log = structlog.get_logger(__name__)
 

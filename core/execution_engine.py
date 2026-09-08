@@ -6,8 +6,10 @@ Workflow Execution Engine.
 - Per-node retry with exponential backoff
 - Full execution log persisted to DB
 - Node types dispatch to integration handlers
+- Redis pub/sub event emission for real-time streaming
 """
 import asyncio
+import json
 import time
 import traceback
 from collections import defaultdict, deque
@@ -23,6 +25,24 @@ from storage.database import db_context
 from core.config import settings
 
 log = structlog.get_logger(__name__)
+
+# Redis channel prefix for execution events
+EXECUTION_CHANNEL_PREFIX = "execution:"
+
+
+async def _publish_execution_event(execution_id: str, event: dict) -> None:
+    """Publish an execution event to Redis pub/sub for SSE consumers."""
+    try:
+        import redis.asyncio as aioredis
+        r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        try:
+            channel = f"{EXECUTION_CHANNEL_PREFIX}{execution_id}"
+            await r.publish(channel, json.dumps(event))
+        finally:
+            await r.aclose()
+    except Exception as exc:
+        # Never let event publishing break execution — it's best-effort
+        log.warning("execution_event_publish_failed", execution_id=execution_id, error=str(exc))
 
 
 class ExecutionPaused(Exception):
@@ -230,6 +250,15 @@ async def execute_workflow(
                 execution.started_at = datetime.utcnow()
             await db.flush()
 
+            # Emit execution started event
+            await _publish_execution_event(execution_id, {
+                "type": "execution.started",
+                "execution_id": execution_id,
+                "workflow_id": execution.workflow_id,
+                "started_at": execution.started_at.isoformat() if execution.started_at else datetime.utcnow().isoformat(),
+                "resuming": resuming,
+            })
+
             nodes_by_id: dict[str, dict] = {
                 n["id"]: n for n in workflow_definition.get("nodes", [])
             }
@@ -322,14 +351,34 @@ async def execute_workflow(
                         execution.node_results = node_results
                         await db.commit()
                         log.info("execution_paused_for_approval", execution_id=execution_id, approval_id=paused.approval_id)
+                        await _publish_execution_event(execution_id, {
+                            "type": "execution.waiting",
+                            "execution_id": execution_id,
+                            "status": "waiting",
+                            "approval_id": paused.approval_id,
+                            "node_id": paused.node_id,
+                        })
                         return
 
                 execution.status = ExecutionStatus.success
+                await _publish_execution_event(execution_id, {
+                    "type": "execution.completed",
+                    "execution_id": execution_id,
+                    "status": "success",
+                    "finished_at": datetime.utcnow().isoformat(),
+                })
 
             except Exception as exc:
                 execution.status = ExecutionStatus.failed
                 execution.error = traceback.format_exc()
                 log.error("workflow_failed", execution_id=execution_id, error=str(exc))
+                await _publish_execution_event(execution_id, {
+                    "type": "execution.failed",
+                    "execution_id": execution_id,
+                    "status": "failed",
+                    "error": str(exc),
+                    "finished_at": datetime.utcnow().isoformat(),
+                })
 
             finally:
                 execution.node_results = node_results
@@ -342,6 +391,16 @@ async def _run_node_tracked(node: dict, input_data: dict, db: AsyncSession, node
     started_at = datetime.utcnow()
     start = time.monotonic()
     retries = 0
+
+    # Emit node started event
+    if execution_id:
+        await _publish_execution_event(execution_id, {
+            "type": "node.started",
+            "node_id": node_id,
+            "node_type": node.get("type"),
+            "started_at": started_at.isoformat(),
+        })
+
     try:
         output = await _execute_node(node, input_data, db, workflow_owner_id, workflow_id, execution_id)
         duration_ms = int((time.monotonic() - start) * 1000)
@@ -359,12 +418,30 @@ async def _run_node_tracked(node: dict, input_data: dict, db: AsyncSession, node
             "retries": retries,
             "error": None,
         }
+        # Emit node completed event
+        if execution_id:
+            await _publish_execution_event(execution_id, {
+                "type": "node.completed",
+                "node_id": node_id,
+                "node_type": node.get("type"),
+                "status": "success",
+                "duration_ms": duration_ms,
+                "finished_at": finished_at.isoformat(),
+            })
         return output
     except Exception as exc:
         duration_ms = int((time.monotonic() - start) * 1000)
         finished_at = datetime.utcnow()
         if exc.__class__.__name__ == "ExecutionPaused":
             log.info("node_paused", node_id=node_id, type=node.get("type"), duration_ms=duration_ms)
+            if execution_id:
+                await _publish_execution_event(execution_id, {
+                    "type": "node.waiting",
+                    "node_id": node_id,
+                    "node_type": node.get("type"),
+                    "duration_ms": duration_ms,
+                    "finished_at": finished_at.isoformat(),
+                })
         else:
             log.error("node_failed", node_id=node_id, type=node.get("type"),
                       duration_ms=duration_ms, error=str(exc))
@@ -380,6 +457,16 @@ async def _run_node_tracked(node: dict, input_data: dict, db: AsyncSession, node
                 "duration_ms": duration_ms,
                 "retries": retries,
             }
+            # Emit node failed event
+            if execution_id:
+                await _publish_execution_event(execution_id, {
+                    "type": "node.failed",
+                    "node_id": node_id,
+                    "node_type": node.get("type"),
+                    "error": str(exc),
+                    "duration_ms": duration_ms,
+                    "finished_at": finished_at.isoformat(),
+                })
         raise
 
 

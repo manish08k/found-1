@@ -37,80 +37,105 @@ export default function ApiKeysPage() {
   function copyKey(key: string) { navigator.clipboard.writeText(key); toast.success('Copied to clipboard') }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <div className="flex justify-between items-center mb-6">
+    <div className="page-fade" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      {/* Header */}
+      <div style={{ padding: '24px 32px 20px', flexShrink: 0, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', borderBottom: '1px solid var(--border)' }}>
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">API Keys</h1>
-          <p className="text-sm text-gray-500 mt-1">Keys for authenticating programmatic access to your AutoFlow instance.</p>
+          <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)' }}>API Keys</h1>
+          <p style={{ color: 'var(--text3)', marginTop: 2, fontSize: 13 }}>Keys for authenticating programmatic access to your AutoFlow instance</p>
         </div>
-        <button onClick={() => setFormOpen(true)} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium">
+        <button onClick={() => setFormOpen(true)} style={{ padding: '7px 14px', background: 'var(--accent)', border: 'none', color: '#fff', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }}>
           + Create Key
         </button>
       </div>
 
-      {/* One-time key display */}
-      {newKeyValue && (
-        <div className="mb-6 p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-xl">
-          <p className="text-sm font-semibold text-green-800 dark:text-green-300 mb-2">Your API key (copy it now — you won't see it again)</p>
-          <div className="flex items-center gap-3">
-            <code className="flex-1 text-sm font-mono bg-white dark:bg-gray-900 px-3 py-2 rounded-lg border border-green-300 dark:border-green-600 text-green-900 dark:text-green-100">{newKeyValue}</code>
-            <button onClick={() => copyKey(newKeyValue)} className="px-3 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700">Copy</button>
-            <button onClick={() => setNewKeyValue(null)} className="px-3 py-2 text-green-700 dark:text-green-400 text-sm hover:bg-green-100 dark:hover:bg-green-900/40 rounded-lg">Dismiss</button>
+      <div style={{ flex: 1, overflow: 'auto', padding: '20px 32px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {/* One-time key display */}
+        {newKeyValue && (
+          <div style={{ padding: '14px 16px', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.3)', borderRadius: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--green)', marginBottom: 8 }}>
+              Your API key — copy it now, you won't see it again
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <code style={{ flex: 1, fontFamily: 'var(--mono)', fontSize: 12, background: 'var(--bg)', padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)', color: 'var(--text)', overflow: 'auto', whiteSpace: 'nowrap' }}>
+                {newKeyValue}
+              </code>
+              <button onClick={() => copyKey(newKeyValue)} style={{ padding: '7px 12px', background: 'var(--green)', border: 'none', color: '#fff', borderRadius: 7, fontSize: 12, cursor: 'pointer', flexShrink: 0 }}>Copy</button>
+              <button onClick={() => setNewKeyValue(null)} style={{ padding: '7px 12px', background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text2)', borderRadius: 7, fontSize: 12, cursor: 'pointer', flexShrink: 0 }}>Dismiss</button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {isLoading && <p className="text-gray-500 text-sm">Loading…</p>}
+        {isLoading && <div style={{ color: 'var(--text3)', fontSize: 13 }}>Loading…</div>}
 
-      <div className="space-y-3">
+        {!isLoading && keys.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '64px 0', color: 'var(--text3)', fontSize: 13 }}>
+            No API keys yet. Create one to get started.
+          </div>
+        )}
+
         {keys.map((k: any) => (
-          <div key={k.id} className={`p-4 rounded-xl border ${k.revoked ? 'border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/10 opacity-60' : 'border-gray-200 dark:border-gray-700'}`}>
-            <div className="flex justify-between items-start">
+          <div key={k.id} style={{
+            padding: '14px 16px',
+            background: 'var(--bg2)',
+            border: `1px solid ${k.revoked ? 'rgba(239,68,68,0.3)' : 'var(--border)'}`,
+            borderRadius: 10,
+            opacity: k.revoked ? 0.6 : 1,
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
               <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="font-medium text-gray-900 dark:text-white text-sm">{k.name}</h3>
-                  {k.revoked && <span className="px-2 py-0.5 text-xs bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 rounded-full">Revoked</span>}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{k.name}</span>
+                  {k.revoked && (
+                    <span style={{ padding: '1px 7px', background: 'rgba(239,68,68,0.1)', color: 'var(--red)', borderRadius: 10, fontSize: 10, fontWeight: 700 }}>REVOKED</span>
+                  )}
                 </div>
-                {k.description && <p className="text-xs text-gray-400 mt-0.5">{k.description}</p>}
-                <div className="flex gap-4 mt-1">
-                  <span className="text-xs text-gray-500 font-mono">Prefix: <code>{k.key_prefix}…</code></span>
-                  {k.last_used_at && <span className="text-xs text-gray-400">Last used: {new Date(k.last_used_at).toLocaleDateString()}</span>}
-                  {k.expires_at && <span className="text-xs text-gray-400">Expires: {new Date(k.expires_at).toLocaleDateString()}</span>}
+                {k.description && <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 4 }}>{k.description}</div>}
+                <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--mono)' }}>
+                    Prefix: <span style={{ color: 'var(--text2)' }}>{k.key_prefix}…</span>
+                  </span>
+                  {k.last_used_at && (
+                    <span style={{ fontSize: 11, color: 'var(--text3)' }}>Last used: {new Date(k.last_used_at).toLocaleDateString()}</span>
+                  )}
+                  {k.expires_at && (
+                    <span style={{ fontSize: 11, color: 'var(--text3)' }}>Expires: {new Date(k.expires_at).toLocaleDateString()}</span>
+                  )}
                 </div>
               </div>
               {!k.revoked && (
-                <div className="flex gap-2">
-                  <button onClick={() => { if (confirm('Rotate this key? The old key will stop working immediately.')) rotateMut.mutate(k.id) }} className="text-xs text-blue-600 hover:text-blue-700 px-2 py-1 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded">Rotate</button>
-                  <button onClick={() => { if (confirm('Revoke this key? This cannot be undone.')) revokeMut.mutate(k.id) }} className="text-xs text-red-500 hover:text-red-600 px-2 py-1 hover:bg-red-50 dark:hover:bg-red-900/20 rounded">Revoke</button>
+                <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                  <button onClick={() => { if (confirm('Rotate this key? The old key will stop working immediately.')) rotateMut.mutate(k.id) }}
+                    style={{ padding: '4px 10px', background: 'rgba(124,58,237,0.1)', color: 'var(--accent)', border: 'none', borderRadius: 6, fontSize: 11, cursor: 'pointer' }}>
+                    Rotate
+                  </button>
+                  <button onClick={() => { if (confirm('Revoke this key? This cannot be undone.')) revokeMut.mutate(k.id) }}
+                    style={{ padding: '4px 10px', background: 'rgba(239,68,68,0.1)', color: 'var(--red)', border: 'none', borderRadius: 6, fontSize: 11, cursor: 'pointer' }}>
+                    Revoke
+                  </button>
                 </div>
               )}
             </div>
           </div>
         ))}
-        {!isLoading && keys.length === 0 && (
-          <div className="text-center py-12 text-gray-400">
-            <p className="text-4xl mb-3">🔑</p>
-            <p className="text-sm">No API keys yet. Create one to get started.</p>
-          </div>
-        )}
       </div>
 
       {/* Create Modal */}
       {formOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 w-full max-w-md shadow-xl">
-            <h2 className="text-lg font-semibold mb-4 text-gray-900 dark:text-white">Create API Key</h2>
-            <div className="space-y-3">
-              <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Key name *" className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              <input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Description (optional)" className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              <div>
-                <label className="text-xs text-gray-500 mb-1 block">Expiry (optional)</label>
-                <input type="date" value={form.expires_at} onChange={e => setForm(f => ({ ...f, expires_at: e.target.value }))} className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              </div>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: 'var(--bg1)', border: '1px solid var(--border)', borderRadius: 14, padding: 24, width: '100%', maxWidth: 440, boxShadow: '0 20px 60px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <h2 style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', margin: 0 }}>Create API Key</h2>
+            <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Key name *" />
+            <input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Description (optional)" />
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 4 }}>Expiry (optional)</div>
+              <input type="date" value={form.expires_at} onChange={e => setForm(f => ({ ...f, expires_at: e.target.value }))} />
             </div>
-            <div className="flex gap-3 mt-5 justify-end">
-              <button onClick={() => { setFormOpen(false); setForm({ name: '', description: '', expires_at: '' }) }} className="px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg">Cancel</button>
-              <button onClick={() => createMut.mutate()} disabled={!form.name.trim() || createMut.isPending} className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg font-medium disabled:opacity-50 hover:bg-blue-700">
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
+              <button onClick={() => { setFormOpen(false); setForm({ name: '', description: '', expires_at: '' }) }}
+                style={{ padding: '7px 14px', background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text2)', borderRadius: 8, fontSize: 12, cursor: 'pointer' }}>Cancel</button>
+              <button onClick={() => createMut.mutate()} disabled={!form.name.trim() || createMut.isPending}
+                style={{ padding: '7px 14px', background: 'var(--accent)', border: 'none', color: '#fff', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: (!form.name.trim() || createMut.isPending) ? 0.5 : 1 }}>
                 {createMut.isPending ? 'Creating…' : 'Create Key'}
               </button>
             </div>

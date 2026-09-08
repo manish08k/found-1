@@ -52,12 +52,6 @@ export default function AssistantsPage() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['assistants'] }); toast.success('Deleted') },
   })
 
-  const runMut = useMutation({
-    mutationFn: () => assistantsApi.runThread(selectedAssistant!, threadId!),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['assistant-threads', selectedAssistant, threadId] }),
-    onError: () => toast.error('Run failed'),
-  })
-
   const sendMut = useMutation({
     mutationFn: async () => {
       let tid = threadId
@@ -78,70 +72,90 @@ export default function AssistantsPage() {
   function openEdit(a: any) { setEditId(a.id); setForm({ name: a.name, description: a.description ?? '', system_prompt: a.system_prompt, model: a.model, provider: a.provider, temperature: a.temperature, max_tokens: a.max_tokens, document_store_id: a.document_store_id ?? '' }); setFormOpen(true) }
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Assistants</h1>
-        <button onClick={openCreate} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium">
+    <div className="page-fade" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      {/* Header */}
+      <div style={{ padding: '24px 32px 20px', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border)' }}>
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)' }}>Assistants</h1>
+          <p style={{ color: 'var(--text3)', marginTop: 2, fontSize: 13 }}>Configure AI assistants powered by your preferred models</p>
+        </div>
+        <button onClick={openCreate} style={{ padding: '7px 14px', background: 'var(--accent)', border: 'none', color: '#fff', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
           + New Assistant
         </button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* Body */}
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', gap: 0 }}>
         {/* Assistant List */}
-        <div className="lg:col-span-1 space-y-3">
-          {isLoading && <p className="text-gray-500 text-sm">Loading…</p>}
-          {assistants.map((a: any) => (
-            <div key={a.id} onClick={() => { setSelectedAssistant(a.id); setThreadId(null) }}
-              className={`p-4 rounded-xl border cursor-pointer transition-colors ${selectedAssistant === a.id ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'}`}>
-              <div className="flex justify-between items-start">
-                <div>
-                  <h3 className="font-medium text-gray-900 dark:text-white text-sm">{a.name}</h3>
-                  <p className="text-xs text-gray-500 mt-0.5">{a.provider} / {a.model}</p>
-                  {a.description && <p className="text-xs text-gray-400 mt-1 line-clamp-2">{a.description}</p>}
-                </div>
-                <div className="flex gap-1 ml-2">
-                  <button onClick={e => { e.stopPropagation(); openEdit(a) }} className="text-gray-400 hover:text-gray-600 text-xs px-1">Edit</button>
-                  <button onClick={e => { e.stopPropagation(); if (confirm('Delete?')) deleteMut.mutate(a.id) }} className="text-red-400 hover:text-red-600 text-xs px-1">Del</button>
+        <div style={{ width: 280, borderRight: '1px solid var(--border)', overflow: 'auto', flexShrink: 0, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {isLoading && <div style={{ color: 'var(--text3)', fontSize: 13, padding: 8 }}>Loading…</div>}
+          {assistants.map((a: any) => {
+            const isSelected = selectedAssistant === a.id
+            return (
+              <div key={a.id} onClick={() => { setSelectedAssistant(a.id); setThreadId(null) }}
+                style={{ padding: '10px 12px', background: isSelected ? 'var(--bg3)' : 'var(--bg2)', border: `1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 10, cursor: 'pointer', transition: 'all 0.1s' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>{a.provider} / {a.model}</div>
+                    {a.description && <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.description}</div>}
+                  </div>
+                  <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
+                    <button onClick={e => { e.stopPropagation(); openEdit(a) }} style={{ padding: '2px 6px', background: 'transparent', color: 'var(--text3)', border: 'none', fontSize: 11, cursor: 'pointer', borderRadius: 4 }}>Edit</button>
+                    <button onClick={e => { e.stopPropagation(); if (confirm('Delete?')) deleteMut.mutate(a.id) }} style={{ padding: '2px 6px', background: 'transparent', color: 'var(--red)', border: 'none', fontSize: 11, cursor: 'pointer', borderRadius: 4 }}>Del</button>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
           {!isLoading && assistants.length === 0 && (
-            <p className="text-gray-500 text-sm text-center py-8">No assistants yet. Create one to get started.</p>
+            <div style={{ color: 'var(--text3)', fontSize: 13, textAlign: 'center', padding: '32px 0' }}>No assistants yet</div>
           )}
         </div>
 
         {/* Chat Panel */}
-        <div className="lg:col-span-2 border border-gray-200 dark:border-gray-700 rounded-xl flex flex-col" style={{ minHeight: '500px' }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           {!selectedAssistant ? (
-            <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">Select an assistant to start chatting</div>
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text3)', fontSize: 13 }}>
+              Select an assistant to start chatting
+            </div>
           ) : (
             <>
-              <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
-                <span className="font-medium text-sm text-gray-900 dark:text-white">
+              <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
+                <span style={{ fontWeight: 600, fontSize: 13, color: 'var(--text)' }}>
                   {assistants.find((a: any) => a.id === selectedAssistant)?.name ?? 'Assistant'}
                 </span>
                 <button onClick={async () => {
                   const t = await assistantsApi.createThread(selectedAssistant)
                   setThreadId(t.id)
-                }} className="text-xs text-blue-600 hover:text-blue-700">New Thread</button>
+                }} style={{ padding: '4px 10px', background: 'var(--bg2)', border: '1px solid var(--border)', color: 'var(--text2)', borderRadius: 6, fontSize: 11, cursor: 'pointer' }}>
+                  New Thread
+                </button>
               </div>
-              <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              <div style={{ flex: 1, overflow: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {messages.map((m: any) => (
-                  <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-xs lg:max-w-md px-3 py-2 rounded-xl text-sm ${m.role === 'user' ? 'bg-blue-600 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-white'}`}>
+                  <div key={m.id} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
+                    <div style={{
+                      maxWidth: '70%', padding: '8px 12px', borderRadius: 10, fontSize: 13,
+                      background: m.role === 'user' ? 'var(--accent)' : 'var(--bg3)',
+                      color: m.role === 'user' ? '#fff' : 'var(--text)',
+                    }}>
                       {m.content}
                     </div>
                   </div>
                 ))}
-                {messages.length === 0 && <p className="text-gray-400 text-sm text-center">No messages yet. Start a conversation.</p>}
+                {messages.length === 0 && (
+                  <div style={{ color: 'var(--text3)', fontSize: 13, textAlign: 'center', marginTop: 40 }}>
+                    {threadId ? 'No messages yet. Start a conversation.' : 'Click "New Thread" to begin.'}
+                  </div>
+                )}
               </div>
-              <div className="p-4 border-t border-gray-200 dark:border-gray-700 flex gap-2">
+              <div style={{ padding: '12px 20px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8, flexShrink: 0 }}>
                 <input value={chatInput} onChange={e => setChatInput(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && !e.shiftKey && chatInput.trim() && sendMut.mutate()}
-                  placeholder="Type a message…" className="flex-1 px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  placeholder="Type a message…" style={{ flex: 1, width: 'auto' }} />
                 <button onClick={() => chatInput.trim() && sendMut.mutate()} disabled={sendMut.isPending || !chatInput.trim()}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-blue-700">
+                  style={{ padding: '7px 16px', background: 'var(--accent)', border: 'none', color: '#fff', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: (sendMut.isPending || !chatInput.trim()) ? 0.5 : 1, flexShrink: 0 }}>
                   {sendMut.isPending ? '…' : 'Send'}
                 </button>
               </div>
@@ -152,36 +166,37 @@ export default function AssistantsPage() {
 
       {/* Create/Edit Modal */}
       {formOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 w-full max-w-lg shadow-xl">
-            <h2 className="text-lg font-semibold mb-4 text-gray-900 dark:text-white">{editId ? 'Edit Assistant' : 'New Assistant'}</h2>
-            <div className="space-y-3">
-              <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Name *" className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              <textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Description" rows={2} className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              <textarea value={form.system_prompt} onChange={e => setForm(f => ({ ...f, system_prompt: e.target.value }))} placeholder="System prompt" rows={3} className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              <div className="grid grid-cols-2 gap-3">
-                <select value={form.provider} onChange={e => setForm(f => ({ ...f, provider: e.target.value, model: (MODELS[e.target.value] ?? [])[0] ?? '' }))} className="px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-                  {PROVIDERS.map(p => <option key={p} value={p}>{p}</option>)}
-                </select>
-                <select value={form.model} onChange={e => setForm(f => ({ ...f, model: e.target.value }))} className="px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-                  {(MODELS[form.provider] ?? [form.model]).map(m => <option key={m} value={m}>{m}</option>)}
-                </select>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs text-gray-500 mb-1 block">Temperature: {form.temperature}</label>
-                  <input type="range" min="0" max="1" step="0.1" value={form.temperature} onChange={e => setForm(f => ({ ...f, temperature: parseFloat(e.target.value) }))} className="w-full" />
-                </div>
-                <div>
-                  <label className="text-xs text-gray-500 mb-1 block">Max Tokens</label>
-                  <input type="number" value={form.max_tokens} onChange={e => setForm(f => ({ ...f, max_tokens: parseInt(e.target.value) }))} className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-              </div>
-              <input value={form.document_store_id} onChange={e => setForm(f => ({ ...f, document_store_id: e.target.value }))} placeholder="Document Store ID (optional, for RAG)" className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: 'var(--bg1)', border: '1px solid var(--border)', borderRadius: 14, padding: 24, width: '100%', maxWidth: 500, boxShadow: '0 20px 60px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <h2 style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', margin: 0 }}>{editId ? 'Edit Assistant' : 'New Assistant'}</h2>
+            <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Name *" />
+            <textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Description" rows={2} />
+            <textarea value={form.system_prompt} onChange={e => setForm(f => ({ ...f, system_prompt: e.target.value }))} placeholder="System prompt" rows={3} />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <select value={form.provider} onChange={e => setForm(f => ({ ...f, provider: e.target.value, model: (MODELS[e.target.value] ?? [])[0] ?? '' }))}>
+                {PROVIDERS.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+              <select value={form.model} onChange={e => setForm(f => ({ ...f, model: e.target.value }))}>
+                {(MODELS[form.provider] ?? [form.model]).map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
             </div>
-            <div className="flex gap-3 mt-5 justify-end">
-              <button onClick={() => { setFormOpen(false); setEditId(null) }} className="px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg">Cancel</button>
-              <button onClick={() => createMut.mutate({ ...form, temperature: form.temperature, document_store_id: form.document_store_id || undefined })} disabled={!form.name.trim() || createMut.isPending} className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg font-medium disabled:opacity-50 hover:bg-blue-700">
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 4 }}>Temperature: {form.temperature}</div>
+                <input type="range" min="0" max="1" step="0.1" value={form.temperature}
+                  onChange={e => setForm(f => ({ ...f, temperature: parseFloat(e.target.value) }))}
+                  style={{ width: '100%', padding: 0, border: 'none', background: 'transparent' }} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 4 }}>Max Tokens</div>
+                <input type="number" value={form.max_tokens} onChange={e => setForm(f => ({ ...f, max_tokens: parseInt(e.target.value) }))} />
+              </div>
+            </div>
+            <input value={form.document_store_id} onChange={e => setForm(f => ({ ...f, document_store_id: e.target.value }))} placeholder="Document Store ID (optional, for RAG)" />
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
+              <button onClick={() => { setFormOpen(false); setEditId(null) }} style={{ padding: '7px 14px', background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text2)', borderRadius: 8, fontSize: 12, cursor: 'pointer' }}>Cancel</button>
+              <button onClick={() => createMut.mutate({ ...form, document_store_id: form.document_store_id || undefined })} disabled={!form.name.trim() || createMut.isPending}
+                style={{ padding: '7px 14px', background: 'var(--accent)', border: 'none', color: '#fff', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: (!form.name.trim() || createMut.isPending) ? 0.5 : 1 }}>
                 {createMut.isPending ? 'Saving…' : (editId ? 'Update' : 'Create')}
               </button>
             </div>

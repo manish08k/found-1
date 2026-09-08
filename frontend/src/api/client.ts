@@ -132,6 +132,81 @@ export const executionsApi = {
     http.get('/executions', { params: workflowId ? { workflow_id: workflowId } : {} }).then(r => r.data),
   get: (id: string) => http.get(`/executions/${id}`).then(r => r.data),
   cancel: (id: string) => http.post(`/executions/${id}/cancel`).then(r => r.data),
+  retryNode: (executionId: string, nodeId: string) =>
+    http.post(`/executions/${executionId}/retry-node/${nodeId}`).then(r => r.data),
+  retry: (id: string) => http.post(`/executions/${id}/retry`).then(r => r.data),
+  replay: (id: string) => http.post(`/executions/${id}/replay`).then(r => r.data),
+  replayFrom: (id: string, nodeId: string) =>
+    http.post(`/executions/${id}/replay-from/${nodeId}`).then(r => r.data),
+  getDebugInfo: (id: string) => http.get(`/executions/${id}/debug`).then(r => r.data),
+  /**
+   * Open a Server-Sent Events stream for real-time execution updates.
+   * Returns an EventSource instance. The caller is responsible for closing it.
+   *
+   * Usage:
+   *   const es = executionsApi.stream(executionId, (event) => { ... })
+   *   // later:
+   *   es.close()
+   */
+  stream: (
+    executionId: string,
+    onEvent: (event: { type: string; [key: string]: any }) => void,
+    onError?: (err: Event) => void,
+    onDone?: () => void,
+  ): EventSource => {
+    const token = localStorage.getItem('token')
+    // EventSource doesn't support custom headers directly, so we pass the
+    // JWT as a query param. The backend SSE endpoint reads it as a fallback.
+    const url = `${BASE_URL}/api/executions/${executionId}/stream?token=${encodeURIComponent(token ?? '')}`
+    const es = new EventSource(url)
+
+    const terminalEvents = new Set(['execution.completed', 'execution.failed'])
+
+    const handleMessage = (ev: MessageEvent, eventType: string) => {
+      try {
+        const data = JSON.parse(ev.data)
+        onEvent({ ...data, type: eventType })
+        if (terminalEvents.has(eventType)) {
+          es.close()
+          onDone?.()
+        }
+      } catch {
+        // ignore malformed messages
+      }
+    }
+
+    const eventTypes = [
+      'ping',
+      'execution.started',
+      'execution.completed',
+      'execution.failed',
+      'execution.waiting',
+      'node.started',
+      'node.completed',
+      'node.failed',
+      'node.waiting',
+    ]
+
+    for (const type of eventTypes) {
+      es.addEventListener(type, (ev: Event) => handleMessage(ev as MessageEvent, type))
+    }
+
+    // Fallback generic message handler
+    es.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data)
+        onEvent(data)
+      } catch {
+        // ignore
+      }
+    }
+
+    if (onError) {
+      es.onerror = onError
+    }
+
+    return es
+  },
 }
 
 export const credentialsApi = {

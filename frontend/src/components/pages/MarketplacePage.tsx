@@ -154,7 +154,7 @@ export default function MarketplacePage() {
   const detailNodes: any[] = detail?.content?.nodes ?? []
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 32, display: 'flex', gap: 24 }}>
+    <div className="page-fade" style={{ flex: 1, overflow: 'auto', padding: 32, display: 'flex', gap: 24 }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         {/* Header */}
         <div style={{ marginBottom: 24 }}>

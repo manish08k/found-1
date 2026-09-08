@@ -19,7 +19,7 @@ function RuleEditor({ rule, onChange, onRemove }: { rule: any; onChange: (r: any
   }
 
   return (
-    <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 10 }}>
+    <div className="page-fade" style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 10 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
         <select value={rule.type} onChange={e => onChange({ type: e.target.value, config: {} })}
           style={{ flex: 1, padding: '6px 10px', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 12 }}>

@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { executionsApi, debugApi, costsApi } from '../../api/client'
 import toast from 'react-hot-toast'
@@ -104,19 +104,46 @@ export default function DebuggerPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const sseRef = useRef<EventSource | null>(null)
 
   const { data: listData, isLoading: listLoading } = useQuery({
     queryKey: ['executions-debug'],
     queryFn: () => executionsApi.list(),
-    refetchInterval: 5000,
+    refetchInterval: 10000,
   })
 
   const { data: debugData, refetch: refetchDebug } = useQuery({
     queryKey: ['execution-debug', selectedId],
     queryFn: () => debugApi.getDebugInfo(selectedId!),
     enabled: !!selectedId,
-    refetchInterval: (d) => (d as any)?.status === 'running' ? 2000 : false,
+    // Only fall back to polling if SSE is not active
+    refetchInterval: (d) => (d as any)?.status === 'running' && !sseRef.current ? 2000 : false,
   })
+
+  // SSE for live debug updates
+  useEffect(() => {
+    if (!selectedId || !debugData) return
+    const isActive = debugData.status === 'running' || debugData.status === 'queued'
+    if (!isActive) {
+      if (sseRef.current) { sseRef.current.close(); sseRef.current = null }
+      return
+    }
+    if (sseRef.current) return
+
+    const es = executionsApi.stream(
+      selectedId,
+      (_event) => {
+        qc.invalidateQueries({ queryKey: ['execution-debug', selectedId] })
+        qc.invalidateQueries({ queryKey: ['executions-debug'] })
+      },
+      () => { if (sseRef.current) { sseRef.current.close(); sseRef.current = null } },
+      () => { qc.invalidateQueries({ queryKey: ['execution-debug', selectedId] }); sseRef.current = null },
+    )
+    sseRef.current = es
+    return () => { es.close(); sseRef.current = null }
+  }, [selectedId, debugData?.status, qc])
+
+  useEffect(() => () => { if (sseRef.current) { sseRef.current.close(); sseRef.current = null } }, [])
 
   const { data: costData } = useQuery({
     queryKey: ['execution-cost', selectedId],
@@ -138,7 +165,7 @@ export default function DebuggerPage() {
   })
 
   return (
-    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+    <div className="page-fade" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
       <div style={{ padding: '24px 32px 0', flexShrink: 0 }}>
         <div style={{ marginBottom: 16 }}>
           <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)' }}>Execution Debugger</h1>

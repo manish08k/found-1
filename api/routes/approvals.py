@@ -140,9 +140,18 @@ async def decide_approval(
         return {"status": "rejected", "execution_status": execution.status.value}
 
     node_results = dict(execution.node_results or {})
+    # Merge: response_payload takes precedence, but fall back to edited_data
+    # so the downstream node always has access to whatever the approver provided.
+    effective_payload = body.response_payload or body.edited_data
     node_results[approval.node_id] = {
         "status": "success",
-        "output": {"approved": True, "response_payload": body.response_payload, "decided_by": user.id},
+        "output": {
+            "approved": True,
+            "response_payload": effective_payload,
+            "edited_data": body.edited_data,
+            "decided_by": user.id,
+            "reason": body.reason,
+        },
     }
     execution.node_results = node_results
     await db.commit()
@@ -155,4 +164,28 @@ async def decide_approval(
         args=[execution.id, workflow.definition, execution.trigger_data or {}],
         queue="workflows",
     )
+
+    # Publish approval event so SSE consumers see the execution resume
+    try:
+        import json as _json
+        from datetime import datetime as _dt
+        import redis.asyncio as _aioredis
+        from core.config import settings as _settings
+        from core.execution_engine import EXECUTION_CHANNEL_PREFIX
+
+        r = _aioredis.from_url(_settings.REDIS_URL, decode_responses=True)
+        await r.publish(
+            f"{EXECUTION_CHANNEL_PREFIX}{execution.id}",
+            _json.dumps({
+                "type": "execution.resumed",
+                "execution_id": execution.id,
+                "node_id": approval.node_id,
+                "decided_by": user.id,
+                "timestamp": _dt.utcnow().isoformat(),
+            }),
+        )
+        await r.aclose()
+    except Exception:
+        pass  # best-effort
+
     return {"status": "approved", "execution_status": "resuming"}

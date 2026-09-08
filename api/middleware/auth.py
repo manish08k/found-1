@@ -198,3 +198,24 @@ async def get_current_user_flexible(
     if oauth_token:
         return await _user_from_token(oauth_token, db)
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+
+async def get_current_user_sse(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """
+    SSE-compatible auth: accepts JWT from Authorization header OR a `token`
+    query parameter. EventSource (browser native) cannot set custom headers,
+    so we allow the short-lived token in the query string for this endpoint
+    only. The token is still validated identically to a header-based token.
+    """
+    token: str | None = None
+    if credentials:
+        token = credentials.credentials
+    else:
+        token = request.query_params.get("token")
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    return await _user_from_token(token, db, required_scope="full")

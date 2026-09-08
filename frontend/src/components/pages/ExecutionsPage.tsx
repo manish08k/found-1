@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { executionsApi } from '../../api/client'
 import type { Execution } from '../../types'
@@ -9,27 +9,92 @@ const STATUS_STYLE: Record<string, { color: string; bg: string }> = {
   running: { color: 'var(--accent)', bg: 'rgba(124,58,237,0.12)' },
   queued: { color: 'var(--yellow)', bg: 'rgba(245,158,11,0.12)' },
   cancelled: { color: 'var(--text3)', bg: 'var(--bg3)' },
+  waiting: { color: 'var(--yellow)', bg: 'rgba(245,158,11,0.12)' },
 }
 
 export default function ExecutionsPage() {
   const qc = useQueryClient()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
+  const sseRef = useRef<EventSource | null>(null)
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['executions-all'],
     queryFn: () => executionsApi.list(),
-    refetchInterval: 5000,
+    // Only poll the list at a slow interval — individual active executions
+    // get real-time updates via SSE below
+    refetchInterval: 10000,
   })
 
   const { data: selectedFull } = useQuery({
     queryKey: ['execution-detail', selectedId],
     queryFn: () => executionsApi.get(selectedId!),
     enabled: !!selectedId,
-    refetchInterval: (d: any) => (d?.status === 'running' || d?.status === 'queued') ? 2000 : false,
+    // Only poll if no SSE connection is active (SSE will invalidate the query)
+    refetchInterval: (d: any) => {
+      const isActive = d?.status === 'running' || d?.status === 'queued'
+      return isActive && !sseRef.current ? 2000 : false
+    },
   })
 
   const selected: Execution | null = selectedFull ?? null
+
+  // Open SSE stream when a running/queued execution is selected
+  useEffect(() => {
+    if (!selectedId) return
+    if (!selectedFull) return
+
+    const isActive = selectedFull.status === 'running' || selectedFull.status === 'queued'
+    if (!isActive) {
+      // Close any open stream when execution finishes
+      if (sseRef.current) {
+        sseRef.current.close()
+        sseRef.current = null
+      }
+      return
+    }
+
+    // Already streaming this execution
+    if (sseRef.current) return
+
+    const es = executionsApi.stream(
+      selectedId,
+      (_event) => {
+        // Any event from the execution — invalidate the query to get fresh data
+        qc.invalidateQueries({ queryKey: ['execution-detail', selectedId] })
+        qc.invalidateQueries({ queryKey: ['executions-all'] })
+      },
+      (_err) => {
+        // SSE error — fall back to polling
+        if (sseRef.current) {
+          sseRef.current.close()
+          sseRef.current = null
+        }
+      },
+      () => {
+        // Execution reached terminal state
+        qc.invalidateQueries({ queryKey: ['execution-detail', selectedId] })
+        qc.invalidateQueries({ queryKey: ['executions-all'] })
+        sseRef.current = null
+      },
+    )
+    sseRef.current = es
+
+    return () => {
+      es.close()
+      sseRef.current = null
+    }
+  }, [selectedId, selectedFull?.status, qc])
+
+  // Clean up SSE on unmount
+  useEffect(() => {
+    return () => {
+      if (sseRef.current) {
+        sseRef.current.close()
+        sseRef.current = null
+      }
+    }
+  }, [])
 
   const cancelMut = useMutation({
     mutationFn: executionsApi.cancel,
@@ -44,7 +109,7 @@ export default function ExecutionsPage() {
   )
 
   return (
-    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+    <div className="page-fade" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
       {/* Header */}
       <div style={{ padding: '24px 32px 0', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
@@ -84,6 +149,7 @@ export default function ExecutionsPage() {
                 ? ((new Date(ex.finished_at).getTime() - new Date(ex.started_at).getTime()) / 1000).toFixed(1) + 's'
                 : null
               const isSelected = selectedId === ex.id
+              const isStreaming = isSelected && !!sseRef.current
               return (
                 <div key={ex.id} onClick={() => setSelectedId(isSelected ? null : ex.id)}
                   style={{ padding: '12px 16px', background: isSelected ? 'var(--bg3)' : 'var(--bg2)', border: `1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 10, cursor: 'pointer', transition: 'all 0.1s' }}>
@@ -91,6 +157,9 @@ export default function ExecutionsPage() {
                     <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 700, color: s.color, background: s.bg, textTransform: 'uppercase', flexShrink: 0 }}>
                       {ex.status}
                     </span>
+                    {isStreaming && (
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', animation: 'pulse 1s infinite', flexShrink: 0 }} title="Live updates" />
+                    )}
                     <span style={{ fontSize: 12, color: 'var(--text)', fontFamily: 'var(--mono)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {ex.id.slice(0, 8)}…
                     </span>
@@ -116,9 +185,16 @@ export default function ExecutionsPage() {
           <div style={{ width: 380, background: 'var(--bg1)', borderLeft: '1px solid var(--border)', overflow: 'auto', flexShrink: 0 }}>
             <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span style={{ fontWeight: 600, fontSize: 13 }}>Execution Detail</span>
-              <button onClick={() => setSelectedId(null)} style={{ background: 'transparent', color: 'var(--text3)', border: 'none', cursor: 'pointer' }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {sseRef.current && (
+                  <span style={{ fontSize: 10, color: 'var(--accent)', padding: '2px 6px', background: 'rgba(124,58,237,0.1)', borderRadius: 4 }}>
+                    Live
+                  </span>
+                )}
+                <button onClick={() => setSelectedId(null)} style={{ background: 'transparent', color: 'var(--text3)', border: 'none', cursor: 'pointer' }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
             </div>
             <div style={{ padding: 16 }}>
               {!selected && <div style={{ color: 'var(--text3)', fontSize: 13 }}>Loading…</div>}
@@ -144,11 +220,14 @@ export default function ExecutionsPage() {
               <div>
                 <div style={{ fontSize: 10, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Node Results</div>
                 {Object.keys(selected.node_results ?? {}).length === 0
-                  ? <div style={{ fontSize: 12, color: 'var(--text3)' }}>No results</div>
+                  ? <div style={{ fontSize: 12, color: 'var(--text3)' }}>No results yet</div>
                   : Object.entries(selected.node_results ?? {}).map(([nodeId, result]: [string, any]) => (
                     <div key={nodeId} style={{ marginBottom: 10 }}>
-                      <div style={{ fontSize: 11, fontWeight: 600, color: result.status === 'error' ? 'var(--red)' : 'var(--green)', marginBottom: 3 }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: result.status === 'error' ? 'var(--red)' : result.status === 'success' ? 'var(--green)' : 'var(--text3)', marginBottom: 3, display: 'flex', alignItems: 'center', gap: 6 }}>
                         {nodeId} — {result.status}
+                        {result.duration_ms != null && (
+                          <span style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 400 }}>{result.duration_ms}ms</span>
+                        )}
                       </div>
                       <pre style={{ fontSize: 10, color: 'var(--text2)', background: 'var(--bg)', padding: 8, borderRadius: 6, overflow: 'auto', maxHeight: 100, margin: 0, fontFamily: 'var(--mono)', whiteSpace: 'pre-wrap' }}>
                         {JSON.stringify(result.output ?? result.error, null, 2)}

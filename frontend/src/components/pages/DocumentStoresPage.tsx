@@ -68,97 +68,127 @@ export default function DocumentStoresPage() {
   function openCreate() { setEditId(null); setForm({ ...EMPTY_FORM }); setFormOpen(true) }
   function openEdit(s: any) { setEditId(s.id); setForm({ name: s.name, description: s.description ?? '', embedding_provider: s.embedding_provider, embedding_model: s.embedding_model, chunk_size: s.chunk_size, chunk_overlap: s.chunk_overlap }); setFormOpen(true) }
 
+  const TABS = [
+    { key: 'chunks', label: 'Chunks' },
+    { key: 'query', label: 'Search' },
+    { key: 'upsert', label: 'Add Docs' },
+  ] as const
+
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Document Stores</h1>
-        <button onClick={openCreate} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium">
+    <div className="page-fade" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      {/* Header */}
+      <div style={{ padding: '24px 32px 20px', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border)' }}>
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)' }}>Document Stores</h1>
+          <p style={{ color: 'var(--text3)', marginTop: 2, fontSize: 13 }}>Vector databases for RAG — ingest, search, and manage embedded documents</p>
+        </div>
+        <button onClick={openCreate} style={{ padding: '7px 14px', background: 'var(--accent)', border: 'none', color: '#fff', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }}>
           + New Store
         </button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', gap: 0 }}>
         {/* Store List */}
-        <div className="lg:col-span-1 space-y-3">
-          {isLoading && <p className="text-gray-500 text-sm">Loading…</p>}
-          {stores.map((s: any) => (
-            <div key={s.id} onClick={() => setSelected(s)}
-              className={`p-4 rounded-xl border cursor-pointer transition-colors ${selected?.id === s.id ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'}`}>
-              <div className="flex justify-between items-start">
-                <div>
-                  <h3 className="font-medium text-gray-900 dark:text-white text-sm">{s.name}</h3>
-                  <p className="text-xs text-gray-500 mt-0.5">{s.embedding_provider} · {s.embedding_model}</p>
-                  <p className="text-xs text-gray-400 mt-0.5">chunk {s.chunk_size} / overlap {s.chunk_overlap}</p>
-                </div>
-                <div className="flex gap-1 ml-2">
-                  <button onClick={e => { e.stopPropagation(); openEdit(s) }} className="text-gray-400 hover:text-gray-600 text-xs px-1">Edit</button>
-                  <button onClick={e => { e.stopPropagation(); if (confirm('Delete store and all its documents?')) deleteMut.mutate(s.id) }} className="text-red-400 hover:text-red-600 text-xs px-1">Del</button>
+        <div style={{ width: 280, borderRight: '1px solid var(--border)', overflow: 'auto', flexShrink: 0, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {isLoading && <div style={{ color: 'var(--text3)', fontSize: 13, padding: 8 }}>Loading…</div>}
+          {stores.map((s: any) => {
+            const isSelected = selected?.id === s.id
+            return (
+              <div key={s.id} onClick={() => setSelected(s)}
+                style={{ padding: '10px 12px', background: isSelected ? 'var(--bg3)' : 'var(--bg2)', border: `1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 10, cursor: 'pointer', transition: 'all 0.1s' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>{s.embedding_provider} · {s.embedding_model}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 1 }}>chunk {s.chunk_size} / overlap {s.chunk_overlap}</div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
+                    <button onClick={e => { e.stopPropagation(); openEdit(s) }} style={{ padding: '2px 6px', background: 'transparent', color: 'var(--text3)', border: 'none', fontSize: 11, cursor: 'pointer', borderRadius: 4 }}>Edit</button>
+                    <button onClick={e => { e.stopPropagation(); if (confirm('Delete store and all its documents?')) deleteMut.mutate(s.id) }} style={{ padding: '2px 6px', background: 'transparent', color: 'var(--red)', border: 'none', fontSize: 11, cursor: 'pointer', borderRadius: 4 }}>Del</button>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
           {!isLoading && stores.length === 0 && (
-            <p className="text-gray-500 text-sm text-center py-8">No document stores yet.</p>
+            <div style={{ color: 'var(--text3)', fontSize: 13, textAlign: 'center', padding: '32px 0' }}>No document stores yet</div>
           )}
         </div>
 
         {/* Detail Panel */}
-        <div className="lg:col-span-2 border border-gray-200 dark:border-gray-700 rounded-xl flex flex-col" style={{ minHeight: '500px' }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           {!selected ? (
-            <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">Select a store to manage its documents</div>
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text3)', fontSize: 13 }}>
+              Select a store to manage its documents
+            </div>
           ) : (
             <>
-              <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-                <div className="flex justify-between items-center mb-3">
-                  <h2 className="font-semibold text-gray-900 dark:text-white">{selected.name}</h2>
-                  <button onClick={() => { if (confirm('Clear all documents?')) clearMut.mutate() }} className="text-xs text-red-500 hover:text-red-600">Clear All</button>
+              <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                  <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>{selected.name}</span>
+                  <button onClick={() => { if (confirm('Clear all documents?')) clearMut.mutate() }}
+                    style={{ padding: '3px 8px', background: 'rgba(239,68,68,0.1)', color: 'var(--red)', border: 'none', borderRadius: 5, fontSize: 11, cursor: 'pointer' }}>
+                    Clear All
+                  </button>
                 </div>
-                <div className="flex gap-2">
-                  {(['chunks', 'query', 'upsert'] as const).map(tab => (
-                    <button key={tab} onClick={() => setActiveTab(tab)}
-                      className={`px-3 py-1 text-xs rounded-full font-medium ${activeTab === tab ? 'bg-blue-600 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200'}`}>
-                      {tab === 'chunks' ? 'Chunks' : tab === 'query' ? 'Search' : 'Add Docs'}
+                <div style={{ display: 'flex', gap: 4 }}>
+                  {TABS.map(tab => (
+                    <button key={tab.key} onClick={() => setActiveTab(tab.key)}
+                      style={{ padding: '4px 12px', background: activeTab === tab.key ? 'var(--accent)' : 'var(--bg3)', color: activeTab === tab.key ? '#fff' : 'var(--text3)', border: 'none', borderRadius: 20, fontSize: 11, fontWeight: activeTab === tab.key ? 600 : 400, cursor: 'pointer' }}>
+                      {tab.label}
                     </button>
                   ))}
                 </div>
               </div>
-              <div className="flex-1 overflow-y-auto p-4">
+
+              <div style={{ flex: 1, overflow: 'auto', padding: '14px 20px', display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {activeTab === 'chunks' && (
-                  <div className="space-y-2">
-                    {chunks.length === 0 && <p className="text-gray-400 text-sm">No documents stored. Use "Add Docs" to ingest text.</p>}
-                    {chunks.map((c: any, i: number) => (
-                      <div key={i} className="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg text-xs text-gray-700 dark:text-gray-300 font-mono">
-                        <div className="text-gray-400 mb-1">#{c.id?.slice(-8) ?? i} · score —</div>
-                        {c.content?.slice(0, 200)}{(c.content?.length ?? 0) > 200 ? '…' : ''}
+                  chunks.length === 0
+                    ? <div style={{ color: 'var(--text3)', fontSize: 13 }}>No documents stored. Use "Add Docs" to ingest text.</div>
+                    : chunks.map((c: any, i: number) => (
+                      <div key={i} style={{ padding: '8px 12px', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 8 }}>
+                        <div style={{ fontSize: 10, color: 'var(--text3)', marginBottom: 4, fontFamily: 'var(--mono)' }}>#{c.id?.slice(-8) ?? i}</div>
+                        <div style={{ fontSize: 11, color: 'var(--text2)', fontFamily: 'var(--mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                          {c.content?.slice(0, 200)}{(c.content?.length ?? 0) > 200 ? '…' : ''}
+                        </div>
                       </div>
-                    ))}
-                  </div>
+                    ))
                 )}
+
                 {activeTab === 'upsert' && (
-                  <div className="space-y-3">
-                    <p className="text-xs text-gray-500">Paste text below. Separate multiple documents with <code>---</code> on its own line.</p>
-                    <textarea value={upsertText} onChange={e => setUpsertText(e.target.value)} rows={10} placeholder="Paste your document text here…" className="w-full px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                    <button onClick={() => upsertMut.mutate()} disabled={!upsertText.trim() || upsertMut.isPending} className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg font-medium disabled:opacity-50 hover:bg-blue-700">
+                  <>
+                    <p style={{ fontSize: 12, color: 'var(--text3)' }}>
+                      Paste text below. Separate multiple documents with <code style={{ fontFamily: 'var(--mono)', background: 'var(--bg3)', padding: '1px 4px', borderRadius: 3 }}>---</code> on its own line.
+                    </p>
+                    <textarea value={upsertText} onChange={e => setUpsertText(e.target.value)} rows={10} placeholder="Paste your document text here…" />
+                    <button onClick={() => upsertMut.mutate()} disabled={!upsertText.trim() || upsertMut.isPending}
+                      style={{ padding: '7px 14px', background: 'var(--accent)', border: 'none', color: '#fff', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: (!upsertText.trim() || upsertMut.isPending) ? 0.5 : 1, alignSelf: 'flex-start' }}>
                       {upsertMut.isPending ? 'Upserting…' : 'Upsert Documents'}
                     </button>
-                  </div>
+                  </>
                 )}
+
                 {activeTab === 'query' && (
-                  <div className="space-y-3">
-                    <div className="flex gap-2">
-                      <input value={queryText} onChange={e => setQueryText(e.target.value)} onKeyDown={e => e.key === 'Enter' && queryText.trim() && queryMut.mutate()} placeholder="Enter search query…" className="flex-1 px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                      <button onClick={() => queryMut.mutate()} disabled={!queryText.trim() || queryMut.isPending} className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg font-medium disabled:opacity-50">
+                  <>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <input value={queryText} onChange={e => setQueryText(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && queryText.trim() && queryMut.mutate()}
+                        placeholder="Enter search query…" style={{ flex: 1 }} />
+                      <button onClick={() => queryMut.mutate()} disabled={!queryText.trim() || queryMut.isPending}
+                        style={{ padding: '7px 14px', background: 'var(--accent)', border: 'none', color: '#fff', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: (!queryText.trim() || queryMut.isPending) ? 0.5 : 1, flexShrink: 0 }}>
                         {queryMut.isPending ? '…' : 'Search'}
                       </button>
                     </div>
                     {queryResults.map((r: any, i: number) => (
-                      <div key={i} className="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
-                        <div className="text-xs text-gray-400 mb-1">Score: {r.score?.toFixed(4)}</div>
-                        <p className="text-sm text-gray-700 dark:text-gray-300">{r.content}</p>
+                      <div key={i} style={{ padding: '10px 12px', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 8 }}>
+                        <div style={{ fontSize: 10, color: 'var(--text3)', marginBottom: 4, fontFamily: 'var(--mono)' }}>Score: {r.score?.toFixed(4)}</div>
+                        <div style={{ fontSize: 12, color: 'var(--text2)' }}>{r.content}</div>
                       </div>
                     ))}
-                    {queryMut.isSuccess && queryResults.length === 0 && <p className="text-gray-400 text-sm">No results found.</p>}
-                  </div>
+                    {queryMut.isSuccess && queryResults.length === 0 && (
+                      <div style={{ color: 'var(--text3)', fontSize: 13 }}>No results found.</div>
+                    )}
+                  </>
                 )}
               </div>
             </>
@@ -168,34 +198,33 @@ export default function DocumentStoresPage() {
 
       {/* Create/Edit Modal */}
       {formOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 w-full max-w-md shadow-xl">
-            <h2 className="text-lg font-semibold mb-4 text-gray-900 dark:text-white">{editId ? 'Edit Store' : 'New Document Store'}</h2>
-            <div className="space-y-3">
-              <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Name *" className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              <textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Description" rows={2} className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              <div className="grid grid-cols-2 gap-3">
-                <select value={form.embedding_provider} onChange={e => setForm(f => ({ ...f, embedding_provider: e.target.value, embedding_model: (EMBEDDING_MODELS[e.target.value] ?? [])[0] ?? '' }))} className="px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-                  {EMBEDDING_PROVIDERS.map(p => <option key={p} value={p}>{p}</option>)}
-                </select>
-                <select value={form.embedding_model} onChange={e => setForm(f => ({ ...f, embedding_model: e.target.value }))} className="px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-                  {(EMBEDDING_MODELS[form.embedding_provider] ?? [form.embedding_model]).map(m => <option key={m} value={m}>{m}</option>)}
-                </select>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: 'var(--bg1)', border: '1px solid var(--border)', borderRadius: 14, padding: 24, width: '100%', maxWidth: 460, boxShadow: '0 20px 60px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <h2 style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', margin: 0 }}>{editId ? 'Edit Store' : 'New Document Store'}</h2>
+            <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Name *" />
+            <textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Description" rows={2} />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <select value={form.embedding_provider} onChange={e => setForm(f => ({ ...f, embedding_provider: e.target.value, embedding_model: (EMBEDDING_MODELS[e.target.value] ?? [])[0] ?? '' }))}>
+                {EMBEDDING_PROVIDERS.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+              <select value={form.embedding_model} onChange={e => setForm(f => ({ ...f, embedding_model: e.target.value }))}>
+                {(EMBEDDING_MODELS[form.embedding_provider] ?? [form.embedding_model]).map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 4 }}>Chunk Size</div>
+                <input type="number" value={form.chunk_size} onChange={e => setForm(f => ({ ...f, chunk_size: parseInt(e.target.value) }))} />
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs text-gray-500 mb-1 block">Chunk Size</label>
-                  <input type="number" value={form.chunk_size} onChange={e => setForm(f => ({ ...f, chunk_size: parseInt(e.target.value) }))} className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-                <div>
-                  <label className="text-xs text-gray-500 mb-1 block">Overlap</label>
-                  <input type="number" value={form.chunk_overlap} onChange={e => setForm(f => ({ ...f, chunk_overlap: parseInt(e.target.value) }))} className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 4 }}>Overlap</div>
+                <input type="number" value={form.chunk_overlap} onChange={e => setForm(f => ({ ...f, chunk_overlap: parseInt(e.target.value) }))} />
               </div>
             </div>
-            <div className="flex gap-3 mt-5 justify-end">
-              <button onClick={() => { setFormOpen(false); setEditId(null) }} className="px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg">Cancel</button>
-              <button onClick={() => createMut.mutate(form)} disabled={!form.name.trim() || createMut.isPending} className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg font-medium disabled:opacity-50 hover:bg-blue-700">
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
+              <button onClick={() => { setFormOpen(false); setEditId(null) }} style={{ padding: '7px 14px', background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text2)', borderRadius: 8, fontSize: 12, cursor: 'pointer' }}>Cancel</button>
+              <button onClick={() => createMut.mutate(form)} disabled={!form.name.trim() || createMut.isPending}
+                style={{ padding: '7px 14px', background: 'var(--accent)', border: 'none', color: '#fff', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: (!form.name.trim() || createMut.isPending) ? 0.5 : 1 }}>
                 {createMut.isPending ? 'Saving…' : (editId ? 'Update' : 'Create')}
               </button>
             </div>

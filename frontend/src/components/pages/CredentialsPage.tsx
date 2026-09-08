@@ -135,7 +135,7 @@ export default function CredentialsPage() {
   }
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 32 }}>
+    <div className="page-fade" style={{ flex: 1, overflow: 'auto', padding: 32 }}>
       <div style={{ maxWidth: 800 }}>
         {/* Header */}
         <div style={{ marginBottom: 28 }}>

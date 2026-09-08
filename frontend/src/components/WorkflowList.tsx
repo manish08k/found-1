@@ -5,6 +5,18 @@ import { useStore } from '../store'
 import toast from 'react-hot-toast'
 import type { Workflow } from '../types'
 
+function timeAgo(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime()
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return `${hrs}h ago`
+  const days = Math.floor(hrs / 24)
+  if (days < 7) return `${days}d ago`
+  return new Date(dateStr).toLocaleDateString()
+}
+
 export default function WorkflowList() {
   const qc = useQueryClient()
   const { setActiveWorkflow, setPage } = useStore()
@@ -20,6 +32,20 @@ export default function WorkflowList() {
     onError: () => toast.error('Failed to create'),
   })
 
+  const duplicateMut = useMutation({
+    mutationFn: (wf: Workflow) => workflowsApi.create({ name: wf.name + ' (copy)', definition: wf.definition }),
+    onSuccess: (newWf) => { qc.invalidateQueries({ queryKey: ['workflows'] }); setActiveWorkflow(newWf); toast.success('Duplicated') },
+    onError: () => toast.error('Failed to duplicate'),
+  })
+
+  const exportWorkflow = (wf: Workflow) => {
+    const json = JSON.stringify({ name: wf.name, definition: wf.definition }, null, 2)
+    const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }))
+    const a = document.createElement('a')
+    a.href = url; a.download = `${wf.name.replace(/\s+/g, '_')}.json`; a.click()
+    URL.revokeObjectURL(url)
+  }
+
   const deleteMut = useMutation({
     mutationFn: workflowsApi.delete,
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['workflows'] }); toast.success('Deleted') },
@@ -32,7 +58,7 @@ export default function WorkflowList() {
   })
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 32 }}>
+    <div className="page-fade" style={{ flex: 1, overflow: 'auto', padding: 32 }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 28 }}>
         <div>
@@ -92,27 +118,39 @@ export default function WorkflowList() {
       {/* Grid */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16 }}>
         {workflows.map(wf => (
-          <div key={wf.id} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 10, padding: 18, transition: 'border-color 0.15s' }}
-            onMouseEnter={e => (e.currentTarget.style.borderColor = 'var(--border2)')}
-            onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--border)')}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 14 }}>
-              <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => setActiveWorkflow(wf)}>
+          <div key={wf.id} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 10, padding: 18, transition: 'border-color 0.15s, box-shadow 0.15s', cursor: 'default' }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--border2)'; e.currentTarget.style.boxShadow = '0 2px 12px rgba(0,0,0,0.2)' }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.boxShadow = 'none' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 10 }}>
+              <div style={{ flex: 1, cursor: 'pointer', minWidth: 0 }} onClick={() => setActiveWorkflow(wf)}>
                 <h3 style={{ fontWeight: 600, fontSize: 14, color: 'var(--text)', marginBottom: 4 }}>{wf.name}</h3>
-                <p style={{ color: 'var(--text3)', fontSize: 12 }}>{wf.definition?.nodes?.length ?? 0} nodes · {new Date(wf.updated_at).toLocaleDateString()}</p>
+                <p style={{ color: 'var(--text3)', fontSize: 12 }}>{wf.definition?.nodes?.length ?? 0} nodes · {timeAgo(wf.updated_at)}</p>
+                {wf.description && (
+                  <p style={{ color: 'var(--text3)', fontSize: 11, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{wf.description}</p>
+                )}
               </div>
-              <span style={{ padding: '2px 9px', borderRadius: 12, fontSize: 10, fontWeight: 700,
+              <span style={{ padding: '2px 9px', borderRadius: 12, fontSize: 10, fontWeight: 700, flexShrink: 0, marginLeft: 10,
                 color: wf.status === 'active' ? 'var(--green)' : wf.status === 'error' ? 'var(--red)' : 'var(--text3)',
                 background: wf.status === 'active' ? 'rgba(34,197,94,0.12)' : wf.status === 'error' ? 'rgba(239,68,68,0.12)' : 'var(--bg3)' }}>
                 {wf.status}
               </span>
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button onClick={() => setActiveWorkflow(wf)} style={{ flex: 1, padding: '7px 0', background: 'var(--bg3)', color: 'var(--text2)', borderRadius: 7, fontSize: 12, fontWeight: 500, border: '1px solid var(--border)', cursor: 'pointer' }}>Edit</button>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button onClick={() => setActiveWorkflow(wf)} title="Open workflow editor"
+                style={{ flex: 1, padding: '7px 0', background: 'var(--bg3)', color: 'var(--text2)', borderRadius: 7, fontSize: 12, fontWeight: 500, border: '1px solid var(--border)', cursor: 'pointer' }}>Edit</button>
               <button onClick={() => toggleMut.mutate({ id: wf.id, active: wf.status === 'active' })}
                 style={{ flex: 1, padding: '7px 0', background: wf.status === 'active' ? 'rgba(239,68,68,0.1)' : 'rgba(34,197,94,0.1)', color: wf.status === 'active' ? 'var(--red)' : 'var(--green)', borderRadius: 7, fontSize: 12, fontWeight: 500, border: 'none', cursor: 'pointer' }}>
                 {wf.status === 'active' ? 'Deactivate' : 'Activate'}
               </button>
-              <button onClick={() => { if (confirm('Delete this workflow?')) deleteMut.mutate(wf.id) }}
+              <button onClick={() => duplicateMut.mutate(wf)} title="Duplicate workflow" disabled={duplicateMut.isPending}
+                style={{ width: 32, height: 32, background: 'transparent', color: 'var(--text3)', borderRadius: 7, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--border)', cursor: 'pointer' }}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+              </button>
+              <button onClick={() => exportWorkflow(wf)} title="Export as JSON"
+                style={{ width: 32, height: 32, background: 'transparent', color: 'var(--text3)', borderRadius: 7, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--border)', cursor: 'pointer' }}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              </button>
+              <button onClick={() => { if (confirm('Delete this workflow?')) deleteMut.mutate(wf.id) }} title="Delete workflow"
                 style={{ width: 32, height: 32, background: 'transparent', color: 'var(--text3)', borderRadius: 7, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--border)', cursor: 'pointer' }}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
               </button>

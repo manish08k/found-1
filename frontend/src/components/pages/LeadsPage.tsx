@@ -4,12 +4,12 @@ import { leadsApi } from '../../api/client'
 import toast from 'react-hot-toast'
 
 const STATUS_OPTIONS = ['new', 'contacted', 'qualified', 'converted', 'lost']
-const STATUS_COLORS: Record<string, string> = {
-  new: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
-  contacted: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300',
-  qualified: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300',
-  converted: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300',
-  lost: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
+const STATUS_STYLE: Record<string, { color: string; bg: string }> = {
+  new:       { color: 'var(--blue)',   bg: 'rgba(59,130,246,0.12)' },
+  contacted: { color: 'var(--accent)', bg: 'rgba(124,58,237,0.12)' },
+  qualified: { color: 'var(--yellow)', bg: 'rgba(245,158,11,0.12)' },
+  converted: { color: 'var(--green)',  bg: 'rgba(34,197,94,0.12)'  },
+  lost:      { color: 'var(--red)',    bg: 'rgba(239,68,68,0.12)'  },
 }
 
 const EMPTY_FORM = { name: '', email: '', phone: '', status: 'new', workflow_id: '', conversation_id: '' }
@@ -28,7 +28,7 @@ export default function LeadsPage() {
     queryFn: () => leadsApi.list({ status: statusFilter || undefined, page, page_size: 20 }),
   })
   const leads = (data?.leads ?? []).filter((l: any) =>
-    !search || [l.name, l.email, l.phone].some(f => f?.toLowerCase().includes(search.toLowerCase()))
+    !search || [l.name, l.email, l.phone].some((f: any) => f?.toLowerCase().includes(search.toLowerCase()))
   )
 
   const createMut = useMutation({
@@ -62,99 +62,112 @@ export default function LeadsPage() {
   function openEdit(l: any) { setEditId(l.id); setForm({ name: l.name ?? '', email: l.email ?? '', phone: l.phone ?? '', status: l.status, workflow_id: l.workflow_id ?? '', conversation_id: l.conversation_id ?? '' }); setFormOpen(true) }
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Leads</h1>
-          <p className="text-sm text-gray-500 mt-1">Contacts captured by your chat workflows.</p>
+    <div className="page-fade" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      {/* Header */}
+      <div style={{ padding: '24px 32px 20px', flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16 }}>
+          <div>
+            <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)' }}>Leads</h1>
+            <p style={{ color: 'var(--text3)', marginTop: 2, fontSize: 13 }}>Contacts captured by your chat workflows</p>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={exportCsv} style={{ padding: '7px 14px', background: 'var(--bg2)', border: '1px solid var(--border)', color: 'var(--text2)', borderRadius: 8, fontSize: 12, cursor: 'pointer' }}>
+              Export CSV
+            </button>
+            <button onClick={openCreate} style={{ padding: '7px 14px', background: 'var(--accent)', border: 'none', color: '#fff', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+              + Add Lead
+            </button>
+          </div>
         </div>
-        <div className="flex gap-3">
-          <button onClick={exportCsv} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 text-sm font-medium">
-            Export CSV
-          </button>
-          <button onClick={openCreate} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium">
-            + Add Lead
-          </button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name, email, phone…" style={{ maxWidth: 240 }} />
+          <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1) }} style={{ maxWidth: 160 }}>
+            <option value="">All statuses</option>
+            {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
         </div>
       </div>
 
-      <div className="flex gap-3 mb-4 flex-wrap">
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name, email, phone…" className="px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1) }} className="px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-          <option value="">All statuses</option>
-          {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
-      </div>
+      {/* Table */}
+      <div style={{ flex: 1, overflow: 'auto', padding: '0 32px 24px' }}>
+        {isLoading && <div style={{ color: 'var(--text3)', fontSize: 13, padding: 8 }}>Loading…</div>}
 
-      {isLoading && <p className="text-gray-500 text-sm">Loading…</p>}
+        {!isLoading && leads.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '64px 0', color: 'var(--text3)', fontSize: 13 }}>
+            {search || statusFilter ? 'No leads match your filter.' : 'No leads yet. They will appear here when captured by workflows.'}
+          </div>
+        ) : (
+          <div style={{ border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: 'var(--bg2)' }}>
+                  {['Name', 'Email', 'Phone', 'Status', 'Created', ''].map(h => (
+                    <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: 10, fontWeight: 600, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {leads.map((l: any) => {
+                  const s = STATUS_STYLE[l.status] ?? STATUS_STYLE.new
+                  return (
+                    <tr key={l.id} style={{ borderTop: '1px solid var(--border)' }}>
+                      <td style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--text)' }}>{l.name ?? '—'}</td>
+                      <td style={{ padding: '10px 14px', color: 'var(--text2)' }}>{l.email ?? '—'}</td>
+                      <td style={{ padding: '10px 14px', color: 'var(--text2)' }}>{l.phone ?? '—'}</td>
+                      <td style={{ padding: '10px 14px' }}>
+                        <select value={l.status} onChange={e => statusMut.mutate({ id: l.id, status: e.target.value })}
+                          style={{ padding: '2px 7px', borderRadius: 10, fontSize: 10, fontWeight: 700, color: s.color, background: s.bg, border: 'none', cursor: 'pointer', width: 'auto', textTransform: 'capitalize' }}>
+                          {STATUS_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                        </select>
+                      </td>
+                      <td style={{ padding: '10px 14px', color: 'var(--text3)', whiteSpace: 'nowrap' }}>
+                        {l.created_at ? new Date(l.created_at).toLocaleDateString() : '—'}
+                      </td>
+                      <td style={{ padding: '10px 14px' }}>
+                        <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                          <button onClick={() => openEdit(l)} style={{ padding: '3px 8px', background: 'transparent', border: 'none', color: 'var(--text3)', fontSize: 11, cursor: 'pointer' }}>Edit</button>
+                          <button onClick={() => { if (confirm('Delete lead?')) deleteMut.mutate(l.id) }} style={{ padding: '3px 8px', background: 'transparent', border: 'none', color: 'var(--red)', fontSize: 11, cursor: 'pointer' }}>Del</button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
 
-      <div className="overflow-hidden rounded-xl border border-gray-200 dark:border-gray-700">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-gray-50 dark:bg-gray-800 text-left">
-              <th className="px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
-              <th className="px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
-              <th className="px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Phone</th>
-              <th className="px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-              <th className="px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
-              <th className="px-4 py-3"></th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-            {leads.map((l: any) => (
-              <tr key={l.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
-                <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">{l.name ?? '—'}</td>
-                <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{l.email ?? '—'}</td>
-                <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{l.phone ?? '—'}</td>
-                <td className="px-4 py-3">
-                  <select value={l.status} onChange={e => statusMut.mutate({ id: l.id, status: e.target.value })}
-                    className={`text-xs font-medium px-2 py-1 rounded-full border-0 cursor-pointer ${STATUS_COLORS[l.status] ?? ''}`}>
-                    {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
-                  </select>
-                </td>
-                <td className="px-4 py-3 text-xs text-gray-400">{l.created_at ? new Date(l.created_at).toLocaleDateString() : '—'}</td>
-                <td className="px-4 py-3 text-right">
-                  <div className="flex gap-2 justify-end">
-                    <button onClick={() => openEdit(l)} className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Edit</button>
-                    <button onClick={() => { if (confirm('Delete lead?')) deleteMut.mutate(l.id) }} className="text-xs text-red-400 hover:text-red-600">Del</button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {!isLoading && leads.length === 0 && (
-          <div className="py-12 text-center text-gray-400">
-            <p className="text-4xl mb-3">👤</p>
-            <p className="text-sm">{search || statusFilter ? 'No leads match your filter.' : 'No leads yet. They will appear here when captured by workflows.'}</p>
+        {/* Pagination */}
+        {(data as any)?.total > 20 && (
+          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12, marginTop: 16 }}>
+            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+              style={{ padding: '5px 12px', background: 'var(--bg2)', border: '1px solid var(--border)', color: 'var(--text2)', borderRadius: 7, fontSize: 12, cursor: 'pointer', opacity: page === 1 ? 0.4 : 1 }}>
+              Previous
+            </button>
+            <span style={{ fontSize: 12, color: 'var(--text3)' }}>Page {page}</span>
+            <button onClick={() => setPage(p => p + 1)} disabled={leads.length < 20}
+              style={{ padding: '5px 12px', background: 'var(--bg2)', border: '1px solid var(--border)', color: 'var(--text2)', borderRadius: 7, fontSize: 12, cursor: 'pointer', opacity: leads.length < 20 ? 0.4 : 1 }}>
+              Next
+            </button>
           </div>
         )}
       </div>
 
-      {data?.total > 20 && (
-        <div className="flex justify-center gap-3 mt-4">
-          <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg disabled:opacity-40">Previous</button>
-          <span className="text-sm text-gray-500 self-center">Page {page}</span>
-          <button onClick={() => setPage(p => p + 1)} disabled={leads.length < 20} className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg disabled:opacity-40">Next</button>
-        </div>
-      )}
-
       {/* Create/Edit Modal */}
       {formOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 w-full max-w-md shadow-xl">
-            <h2 className="text-lg font-semibold mb-4 text-gray-900 dark:text-white">{editId ? 'Edit Lead' : 'Add Lead'}</h2>
-            <div className="space-y-3">
-              <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Full name" className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="Email address" className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              <input value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="Phone number" className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              <select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))} className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-                {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
-            </div>
-            <div className="flex gap-3 mt-5 justify-end">
-              <button onClick={() => { setFormOpen(false); setEditId(null) }} className="px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg">Cancel</button>
-              <button onClick={() => createMut.mutate(form)} disabled={(!form.name && !form.email) || createMut.isPending} className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg font-medium disabled:opacity-50 hover:bg-blue-700">
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: 'var(--bg1)', border: '1px solid var(--border)', borderRadius: 14, padding: 24, width: '100%', maxWidth: 440, boxShadow: '0 20px 60px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <h2 style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', margin: 0 }}>{editId ? 'Edit Lead' : 'Add Lead'}</h2>
+            <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Full name" />
+            <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="Email address" />
+            <input value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="Phone number" />
+            <select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))}>
+              {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
+              <button onClick={() => { setFormOpen(false); setEditId(null) }} style={{ padding: '7px 14px', background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text2)', borderRadius: 8, fontSize: 12, cursor: 'pointer' }}>Cancel</button>
+              <button onClick={() => createMut.mutate(form)} disabled={(!form.name && !form.email) || createMut.isPending}
+                style={{ padding: '7px 14px', background: 'var(--accent)', border: 'none', color: '#fff', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: ((!form.name && !form.email) || createMut.isPending) ? 0.5 : 1 }}>
                 {createMut.isPending ? 'Saving…' : (editId ? 'Update' : 'Add Lead')}
               </button>
             </div>

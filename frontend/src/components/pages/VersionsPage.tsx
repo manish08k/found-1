@@ -142,12 +142,39 @@ export default function VersionsPage() {
 
   const versionList: any[] = Array.isArray(versions) ? versions : []
 
+  const handleImport = () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.json'
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0]
+      if (!file) return
+      try {
+        const text = await file.text()
+        const parsed = JSON.parse(text)
+        await workflowsApi.create({ name: parsed.name || 'Imported Workflow', definition: parsed.definition })
+        qc.invalidateQueries({ queryKey: ['workflows'] })
+        toast.success('Workflow imported successfully')
+      } catch {
+        toast.error('Failed to import — invalid JSON file')
+      }
+    }
+    input.click()
+  }
+
   return (
-    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+    <div className="page-fade" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
       <div style={{ padding: '24px 32px 0', flexShrink: 0 }}>
-        <div style={{ marginBottom: 24 }}>
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)' }}>Version History</h1>
-          <p style={{ color: 'var(--text3)', marginTop: 2, fontSize: 13 }}>Browse, compare, and rollback workflow versions. Each save creates a snapshot.</p>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24 }}>
+          <div>
+            <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)' }}>Version History</h1>
+            <p style={{ color: 'var(--text3)', marginTop: 2, fontSize: 13 }}>Browse, compare, and rollback workflow versions. Each save creates a snapshot.</p>
+          </div>
+          <button onClick={handleImport}
+            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', background: 'var(--bg3)', color: 'var(--text2)', borderRadius: 8, fontWeight: 600, fontSize: 12, border: '1px solid var(--border)', cursor: 'pointer', flexShrink: 0 }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Import JSON
+          </button>
         </div>
 
         <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>

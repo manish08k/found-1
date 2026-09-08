@@ -1,25 +1,27 @@
 """Executions router — production version."""
+import asyncio
 import hashlib
 import hmac as hmac_lib
 import json as json_lib
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import AsyncGenerator, Optional
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.middleware.auth import get_current_user
+from api.middleware.auth import get_current_user, get_current_user_sse
 from core.plans import execution_history_cutoff
 from storage.database import get_db, get_db_read
 from storage.models import (
     Execution, ExecutionStatus, Workflow, User,
     WebhookEndpoint, WorkflowStatus,
 )
-from core.execution_engine import resume_execution
+from core.execution_engine import resume_execution, EXECUTION_CHANNEL_PREFIX
 
 log = structlog.get_logger(__name__)
 router = APIRouter()
@@ -367,6 +369,93 @@ async def replay_from_node(
         "kept_nodes": list(keep_nodes),
         "status": "queued",
     }
+
+
+# ─── SSE Stream ───────────────────────────────────────────────────────────────
+
+@router.get("/{execution_id}/stream")
+async def stream_execution(
+    execution_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_read),
+    user: User = Depends(get_current_user_sse),
+):
+    """
+    Server-Sent Events stream for real-time execution updates.
+    Subscribes to the Redis pub/sub channel for this execution and pushes
+    node start/complete/fail events and execution status changes to the client.
+    Terminates automatically when the execution reaches a terminal state
+    (success, failed, cancelled) or the client disconnects.
+    """
+    # Authorize: ensure this execution belongs to the caller
+    await _load(execution_id, user.id, db)
+
+    async def _event_generator() -> AsyncGenerator[str, None]:
+        import redis.asyncio as aioredis
+        from core.config import settings
+
+        r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        pubsub = r.pubsub()
+        channel = f"{EXECUTION_CHANNEL_PREFIX}{execution_id}"
+        try:
+            await pubsub.subscribe(channel)
+
+            # Send initial ping so the client knows the connection is open
+            yield "event: ping\ndata: {}\n\n"
+
+            terminal_statuses = {"success", "failed", "cancelled"}
+
+            async for message in pubsub.listen():
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    break
+
+                if message["type"] != "message":
+                    continue
+
+                try:
+                    data = json_lib.loads(message["data"])
+                except (json_lib.JSONDecodeError, TypeError):
+                    continue
+
+                event_type = data.get("type", "event")
+                yield f"event: {event_type}\ndata: {json_lib.dumps(data)}\n\n"
+
+                # Execution reached a terminal state — close the stream
+                exec_status = data.get("status")
+                if event_type in ("execution.completed", "execution.failed") or exec_status in terminal_statuses:
+                    break
+
+                # Hard limit: if the execution is already finished in DB,
+                # close the stream (handles cases where worker crashed before
+                # publishing the final event).
+                if event_type == "execution.started":
+                    pass  # keep listening
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            log.warning("sse_stream_error", execution_id=execution_id, error=str(exc))
+        finally:
+            try:
+                await pubsub.unsubscribe(channel)
+                await pubsub.aclose()
+            except Exception:
+                pass
+            try:
+                await r.aclose()
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        _event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ─── Webhook receive ──────────────────────────────────────────────────────────

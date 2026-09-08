@@ -1,6 +1,7 @@
 import React from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { executionsApi } from '../../api/client'
+import toast from 'react-hot-toast'
 import type { Execution } from '../../types'
 
 interface Props { workflowId: string; onClose: () => void }
@@ -13,12 +14,20 @@ const S: Record<string, { color: string; bg: string }> = {
   cancelled: { color: 'var(--text3)', bg: 'var(--bg3)' },
 }
 
+const TERMINAL_STATES = new Set(['success', 'failed', 'cancelled'])
+
 export default function ExecutionsPanel({ workflowId, onClose }: Props) {
+  const qc = useQueryClient()
   const [selected, setSelected] = React.useState<Execution | null>(null)
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['executions', workflowId],
     queryFn: () => executionsApi.list(workflowId),
-    refetchInterval: 5000,
+    refetchInterval: (query) => {
+      // Stop polling if all visible executions are in terminal state
+      const execs: Execution[] = (query.state.data as any)?.executions ?? []
+      const hasActive = execs.some(e => !TERMINAL_STATES.has(e.status))
+      return hasActive ? 3000 : 8000
+    },
   })
   const executions: Execution[] = data?.executions ?? []
 
@@ -65,6 +74,12 @@ export default function ExecutionsPanel({ workflowId, onClose }: Props) {
                     </div>
                   ))}
                   {Object.keys(ex.node_results ?? {}).length === 0 && <div style={{ fontSize: 10, color: 'var(--text3)' }}>No results</div>}
+                  {isSel && ex.status === 'failed' && (
+                    <button onClick={async (e) => { e.stopPropagation(); await executionsApi.retry(ex.id); qc.invalidateQueries({queryKey: ['executions', workflowId]}); toast.success('Retrying…') }}
+                      style={{ marginTop: 6, width: '100%', padding: '5px 0', background: 'rgba(124,58,237,0.1)', color: 'var(--accent)', borderRadius: 6, fontSize: 11, fontWeight: 600, border: '1px solid rgba(124,58,237,0.2)', cursor: 'pointer' }}>
+                      ↺ Retry
+                    </button>
+                  )}
                 </div>
               )}
             </div>

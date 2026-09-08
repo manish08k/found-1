@@ -121,7 +121,7 @@ export default function PricingPage() {
   }
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 32 }}>
+    <div className="page-fade" style={{ flex: 1, overflow: 'auto', padding: 32 }}>
       <div style={{ marginBottom: 20 }}>
         <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)' }}>Plans &amp; Pricing</h1>
         <p style={{ color: 'var(--text3)', marginTop: 2, fontSize: 13 }}>Pick the plan that fits your team. Upgrade or downgrade anytime.</p>

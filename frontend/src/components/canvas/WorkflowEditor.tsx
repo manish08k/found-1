@@ -62,9 +62,10 @@ function autoLayout(nodes: Node[], edges: Edge[]): Node[] {
 }
 
 const EDGE_STYLE = {
-  type: 'smoothstep',
-  markerEnd: { type: MarkerType.ArrowClosed, color: '#7c3aed' },
-  style: { stroke: '#7c3aed', strokeWidth: 2, opacity: 0.8 },
+  type: 'default',
+  markerEnd: { type: MarkerType.ArrowClosed, color: '#7c3aed', width: 16, height: 16 },
+  style: { stroke: '#7c3aed', strokeWidth: 1.5, opacity: 0.85 },
+  pathOptions: { curvature: 0.4 },
 }
 
 function EditorInner() {
@@ -80,6 +81,7 @@ function EditorInner() {
   const [running, setRunning] = useState(false)
   const [showPublish, setShowPublish] = useState(false)
   const [publishForm, setPublishForm] = useState({ name: '', description: '', category: '', tags: '' })
+  const [isDirty, setIsDirty] = useState(false)
   const pollRef = useRef<any>(null)
   const wf = activeWorkflow!
 
@@ -105,8 +107,15 @@ function EditorInner() {
     })))
   }, [wf.id])
 
-  const onNodesChange = useCallback((c: NodeChange[]) => setNodes(n => applyNodeChanges(c, n)), [])
-  const onEdgesChange = useCallback((c: EdgeChange[]) => setEdges(e => applyEdgeChanges(c, e)), [])
+  const onNodesChange = useCallback((c: NodeChange[]) => {
+    setNodes(n => applyNodeChanges(c, n))
+    const hasSubstantive = c.some(ch => ch.type !== 'select' && ch.type !== 'dimensions')
+    if (hasSubstantive) setIsDirty(true)
+  }, [])
+  const onEdgesChange = useCallback((c: EdgeChange[]) => {
+    setEdges(e => applyEdgeChanges(c, e))
+    setIsDirty(true)
+  }, [])
   const onConnect = useCallback((conn: Connection) => {
     setEdges(eds => addEdge({ ...conn, id: `e-${conn.source}-${conn.target}-${Date.now()}`, ...EDGE_STYLE }, eds))
   }, [])
@@ -164,6 +173,7 @@ function EditorInner() {
       setActiveWorkflow({ ...wf, definition })
       qc.invalidateQueries({ queryKey: ['workflows'] })
       toast.success('Workflow saved')
+      setIsDirty(false)
     } catch { toast.error('Save failed') }
     finally { setSaving(false) }
   }
@@ -186,29 +196,82 @@ function EditorInner() {
     try {
       const { execution_id } = await workflowsApi.execute(wf.id)
       toast.success('Execution started')
-      let attempts = 0
-      pollRef.current = setInterval(async () => {
-        attempts++
-        try {
-          const ex = await executionsApi.get(execution_id)
-          const statuses: Record<string, string> = {}
-          Object.entries(ex.node_results ?? {}).forEach(([nid, r]: [string, any]) => { statuses[nid] = r.status })
-          setNodes(ns => ns.map(n => ({ ...n, data: { ...n.data, status: statuses[n.id] } })))
-          if (['success', 'failed', 'cancelled'].includes(ex.status) || attempts > 60) {
-            clearInterval(pollRef.current)
-            setRunning(false)
+
+      // Use SSE stream instead of polling
+      const es = executionsApi.stream(
+        execution_id,
+        (event) => {
+          if (event.type === 'node.started' || event.type === 'node.completed' || event.type === 'node.failed') {
+            const nodeId = event.node_id
+            const status = event.type === 'node.started' ? 'running'
+              : event.type === 'node.completed' ? 'success'
+              : 'error'
+            setNodes(ns => ns.map(n => n.id === nodeId ? { ...n, data: { ...n.data, status } } : n))
+          }
+        },
+        (_err) => {
+          // SSE error — fall back to a single GET for final status
+          executionsApi.get(execution_id).then(ex => {
+            const statuses: Record<string, string> = {}
+            Object.entries(ex.node_results ?? {}).forEach(([nid, r]: [string, any]) => { statuses[nid] = r.status })
+            setNodes(ns => ns.map(n => ({ ...n, data: { ...n.data, status: statuses[n.id] } })))
+          }).catch(() => {})
+          setRunning(false)
+        },
+        () => {
+          // Execution finished
+          executionsApi.get(execution_id).then(ex => {
+            const statuses: Record<string, string> = {}
+            Object.entries(ex.node_results ?? {}).forEach(([nid, r]: [string, any]) => { statuses[nid] = r.status })
+            setNodes(ns => ns.map(n => ({ ...n, data: { ...n.data, status: statuses[n.id] } })))
             if (ex.status === 'success') toast.success('Execution completed')
             else if (ex.status === 'failed') toast.error('Execution failed')
-          }
-        } catch { clearInterval(pollRef.current); setRunning(false) }
-      }, 2000)
+          }).catch(() => {})
+          setRunning(false)
+        },
+      )
+      // Store so we can close on unmount
+      pollRef.current = es
     } catch (err: any) {
       toast.error(err.response?.data?.detail || 'Run failed')
       setRunning(false)
     }
   }
 
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
+  useEffect(() => () => {
+    if (pollRef.current) {
+      if (typeof pollRef.current.close === 'function') {
+        pollRef.current.close()
+      } else {
+        clearInterval(pollRef.current)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault()
+        save()
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [nodes, edges])
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
+      if (e.key === 'a' || e.key === 'A') {
+        if (!e.ctrlKey && !e.metaKey) {
+          e.preventDefault()
+          setShowPicker(p => !p)
+        }
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
 
   const selectedNode = nodes.find(n => n.id === selectedNodeId)
 
@@ -221,7 +284,10 @@ function EditorInner() {
           Back
         </button>
         <div style={{ width: 1, height: 20, background: 'var(--border)' }} />
-        <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>{wf.name}</span>
+        <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          {wf.name}
+          {isDirty && <span className="unsaved-dot" style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--yellow)', display: 'inline-block', flexShrink: 0 }} title="Unsaved changes" />}
+        </span>
         <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 700,
           background: wf.status === 'active' ? 'rgba(34,197,94,0.12)' : 'var(--bg3)',
           color: wf.status === 'active' ? 'var(--green)' : 'var(--text3)' }}>
@@ -239,11 +305,21 @@ function EditorInner() {
         </Btn>
         <div style={{ width: 1, height: 20, background: 'var(--border)' }} />
 
-        <Btn onClick={() => setNodes(ns => autoLayout(ns, edges))}>
+        <Btn onClick={() => setNodes(ns => autoLayout(ns, edges))} title="Auto-arrange nodes">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="21" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="21" y1="18" x2="3" y2="18"/></svg>
           Layout
         </Btn>
-        <button onClick={() => setShowPicker(p => !p)} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 14px', background: showPicker ? 'var(--bg3)' : 'var(--bg2)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: 7, fontSize: 12, fontWeight: 500, cursor: 'pointer' }}>
+        <Btn onClick={() => {
+          const json = JSON.stringify({ name: wf.name, definition: buildDef() }, null, 2)
+          const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }))
+          const a = document.createElement('a')
+          a.href = url; a.download = `${wf.name.replace(/\s+/g, '_')}.json`; a.click()
+          URL.revokeObjectURL(url)
+        }} title="Export workflow as JSON">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Export
+        </Btn>
+        <button onClick={() => setShowPicker(p => !p)} title="Add a node (A)" style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 14px', background: showPicker ? 'var(--bg3)' : 'var(--bg2)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: 7, fontSize: 12, fontWeight: 500, cursor: 'pointer' }}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           Add Node
         </button>
@@ -259,7 +335,8 @@ function EditorInner() {
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
           Share
         </Btn>
-        <button onClick={save} disabled={saving} style={{ padding: '6px 18px', background: 'var(--accent)', color: '#fff', borderRadius: 7, fontSize: 12, fontWeight: 700, border: 'none', cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? 0.7 : 1 }}>
+        <button onClick={save} disabled={saving} title="Save workflow (⌘S / Ctrl+S)"
+          style={{ padding: '6px 18px', background: isDirty ? 'var(--accent)' : 'var(--bg3)', color: isDirty ? '#fff' : 'var(--text3)', borderRadius: 7, fontSize: 12, fontWeight: 700, border: `1px solid ${isDirty ? 'transparent' : 'var(--border)'}`, cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? 0.7 : 1, transition: 'all 0.15s' }}>
           {saving ? 'Saving…' : 'Save'}
         </button>
       </div>
@@ -345,12 +422,21 @@ function EditorInner() {
           </ReactFlow>
 
           {nodes.length === 0 && (
-            <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, pointerEvents: 'none' }}>
-              <div style={{ width: 72, height: 72, border: '2px dashed var(--border2)', borderRadius: 18, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" strokeWidth="1.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 14, pointerEvents: 'none' }}>
+              <div style={{ width: 64, height: 64, border: '1.5px dashed var(--border2)', borderRadius: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.6 }}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" strokeWidth="1.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               </div>
-              <p style={{ color: 'var(--text3)', fontSize: 14 }}>Click <strong style={{ color: 'var(--text2)' }}>Add Node</strong> to build your workflow</p>
-              <p style={{ color: 'var(--text3)', fontSize: 12 }}>or <strong style={{ color: 'var(--text2)', pointerEvents: 'all', cursor: 'pointer', textDecoration: 'underline' }} onClick={() => { setActiveWorkflow(null); setPage('marketplace') }}>browse ready-made templates</strong></p>
+              <div style={{ textAlign: 'center' }}>
+                <p style={{ color: 'var(--text2)', fontSize: 14, fontWeight: 500 }}>Start building your workflow</p>
+                <p style={{ color: 'var(--text3)', fontSize: 12, marginTop: 4 }}>Click <strong style={{ color: 'var(--text2)' }}>Add Node</strong> to add your first step</p>
+              </div>
+              <p style={{ color: 'var(--text3)', fontSize: 11, pointerEvents: 'all' }}>
+                or{' '}
+                <span style={{ color: 'var(--accent)', cursor: 'pointer', textDecoration: 'underline' }}
+                  onClick={() => { setActiveWorkflow(null); setPage('marketplace') }}>
+                  browse templates
+                </span>
+              </p>
             </div>
           )}
         </div>
@@ -367,9 +453,9 @@ function EditorInner() {
   )
 }
 
-function Btn({ children, onClick, active }: any) {
+function Btn({ children, onClick, active, title }: any) {
   return (
-    <button onClick={onClick} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 12px', background: active ? 'var(--bg3)' : 'transparent', border: `1px solid ${active ? 'var(--border2)' : 'transparent'}`, color: active ? 'var(--text)' : 'var(--text3)', borderRadius: 7, fontSize: 12, fontWeight: 500, cursor: 'pointer' }}>
+    <button onClick={onClick} title={title} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 12px', background: active ? 'var(--bg3)' : 'transparent', border: `1px solid ${active ? 'var(--border2)' : 'transparent'}`, color: active ? 'var(--text)' : 'var(--text3)', borderRadius: 7, fontSize: 12, fontWeight: 500, cursor: 'pointer' }}>
       {children}
     </button>
   )

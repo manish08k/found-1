@@ -140,7 +140,7 @@ export const credentialsApi = {
   rename: (id: string, label: string) =>
     http.patch(`/credentials/${id}`, { label }).then(r => r.data),
   test: (id: string) => http.post(`/credentials/${id}/test`).then(r => r.data),
-  delete: (id: string) => http.delete(`/oauth/credentials/${id}`),
+  delete: (id: string) => http.delete(`/credentials/${id}`),
   createManual: (data: {
     label: string; db_type: 'postgres' | 'mysql' | 'sqlite';
     host?: string; port?: number; database: string;
@@ -265,7 +265,7 @@ export const approvalsApi = {
   list: (params?: { status?: string }) =>
     http.get('/approvals', { params }).then(r => r.data),
   get: (id: string) => http.get(`/approvals/${id}`).then(r => r.data),
-  decide: (id: string, data: { action: 'approve' | 'reject'; reason?: string; edited_data?: any }) =>
+  decide: (id: string, data: { decision: 'approve' | 'reject'; reason?: string; edited_data?: any }) =>
     http.post(`/approvals/${id}/decide`, data).then(r => r.data),
   history: (params?: { page?: number; page_size?: number }) =>
     http.get('/approvals/history', { params }).then(r => r.data),

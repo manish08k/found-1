@@ -13,7 +13,7 @@ const STATUS_STYLE: Record<string, { color: string; bg: string }> = {
 
 export default function ExecutionsPage() {
   const qc = useQueryClient()
-  const [selected, setSelected] = useState<Execution | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
 
   const { data, isLoading, refetch } = useQuery({
@@ -22,9 +22,21 @@ export default function ExecutionsPage() {
     refetchInterval: 5000,
   })
 
+  const { data: selectedFull } = useQuery({
+    queryKey: ['execution-detail', selectedId],
+    queryFn: () => executionsApi.get(selectedId!),
+    enabled: !!selectedId,
+    refetchInterval: (d: any) => (d?.status === 'running' || d?.status === 'queued') ? 2000 : false,
+  })
+
+  const selected: Execution | null = selectedFull ?? null
+
   const cancelMut = useMutation({
     mutationFn: executionsApi.cancel,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['executions-all'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['executions-all'] })
+      qc.invalidateQueries({ queryKey: ['execution-detail', selectedId] })
+    },
   })
 
   const executions: Execution[] = (data?.executions ?? []).filter((e: Execution) =>
@@ -71,9 +83,9 @@ export default function ExecutionsPage() {
               const dur = ex.started_at && ex.finished_at
                 ? ((new Date(ex.finished_at).getTime() - new Date(ex.started_at).getTime()) / 1000).toFixed(1) + 's'
                 : null
-              const isSelected = selected?.id === ex.id
+              const isSelected = selectedId === ex.id
               return (
-                <div key={ex.id} onClick={() => setSelected(isSelected ? null : ex)}
+                <div key={ex.id} onClick={() => setSelectedId(isSelected ? null : ex.id)}
                   style={{ padding: '12px 16px', background: isSelected ? 'var(--bg3)' : 'var(--bg2)', border: `1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 10, cursor: 'pointer', transition: 'all 0.1s' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                     <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 700, color: s.color, background: s.bg, textTransform: 'uppercase', flexShrink: 0 }}>
@@ -100,15 +112,17 @@ export default function ExecutionsPage() {
         </div>
 
         {/* Detail panel */}
-        {selected && (
+        {selectedId && (
           <div style={{ width: 380, background: 'var(--bg1)', borderLeft: '1px solid var(--border)', overflow: 'auto', flexShrink: 0 }}>
             <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span style={{ fontWeight: 600, fontSize: 13 }}>Execution Detail</span>
-              <button onClick={() => setSelected(null)} style={{ background: 'transparent', color: 'var(--text3)', border: 'none', cursor: 'pointer' }}>
+              <button onClick={() => setSelectedId(null)} style={{ background: 'transparent', color: 'var(--text3)', border: 'none', cursor: 'pointer' }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
             </div>
             <div style={{ padding: 16 }}>
+              {!selected && <div style={{ color: 'var(--text3)', fontSize: 13 }}>Loading…</div>}
+              {selected && <>
               <div style={{ marginBottom: 12 }}>
                 <div style={{ fontSize: 10, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>ID</div>
                 <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text2)', wordBreak: 'break-all' }}>{selected.id}</div>
@@ -142,6 +156,7 @@ export default function ExecutionsPage() {
                     </div>
                   ))}
               </div>
+              </>}
             </div>
           </div>
         )}

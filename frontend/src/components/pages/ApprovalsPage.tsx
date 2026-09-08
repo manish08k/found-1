@@ -23,7 +23,7 @@ function DecideModal({ approval, onClose }: { approval: any; onClose: () => void
   const qc = useQueryClient()
   const [action, setAction] = useState<'approve' | 'reject'>('approve')
   const [reason, setReason] = useState('')
-  const [editedData, setEditedData] = useState(JSON.stringify(approval.trigger_data || {}, null, 2))
+  const [editedData, setEditedData] = useState(JSON.stringify(approval.payload || {}, null, 2))
 
   const decideMut = useMutation({
     mutationFn: (d: any) => approvalsApi.decide(approval.id, d),
@@ -40,7 +40,7 @@ function DecideModal({ approval, onClose }: { approval: any; onClose: () => void
     if (action === 'approve') {
       try { edited = JSON.parse(editedData) } catch { toast.error('Invalid JSON in edited data'); return }
     }
-    decideMut.mutate({ action, reason, edited_data: action === 'approve' ? edited : undefined })
+    decideMut.mutate({ decision: action, reason, edited_data: action === 'approve' ? edited : undefined })
   }
 
   return (
@@ -123,7 +123,7 @@ export default function ApprovalsPage() {
   })
 
   const approvals: any[] = data?.approvals ?? []
-  const history: any[] = histData?.approvals ?? []
+  const history: any[] = histData?.history ?? []
 
   return (
     <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>

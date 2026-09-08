@@ -115,6 +115,7 @@ async def get_assistant(
     return _serialize_assistant(assistant)
 
 
+@router.patch("/{assistant_id}")
 @router.put("/{assistant_id}")
 async def update_assistant(
     assistant_id: str,

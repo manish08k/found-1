@@ -49,9 +49,18 @@ async def list_leads(
     status: Optional[str] = Query(None),
     limit: int = Query(50, le=500),
     offset: int = Query(0),
+    page: Optional[int] = Query(None, ge=1),
+    page_size: Optional[int] = Query(None, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    # Support both limit/offset and page/page_size styles
+    if page is not None and page_size is not None:
+        limit = page_size
+        offset = (page - 1) * page_size
+    elif page is not None:
+        limit = 20
+        offset = (page - 1) * limit
     stmt = select(Lead).where(Lead.owner_id == user.id).order_by(Lead.created_at.desc())
     if workflow_id:
         stmt = stmt.where(Lead.workflow_id == workflow_id)
@@ -131,6 +140,7 @@ async def get_lead(
     return _serialize(lead)
 
 
+@router.patch("/{lead_id}")
 @router.put("/{lead_id}")
 async def update_lead(
     lead_id: str,

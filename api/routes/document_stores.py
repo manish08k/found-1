@@ -113,6 +113,7 @@ async def get_document_store(
     return data
 
 
+@router.patch("/{store_id}")
 @router.put("/{store_id}")
 async def update_document_store(
     store_id: str,

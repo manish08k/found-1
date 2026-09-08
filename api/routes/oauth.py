@@ -1,6 +1,9 @@
 """OAuth routes — user-facing connect flow."""
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -8,9 +11,26 @@ from storage.database import get_db
 from storage.models import OAuthCredential
 from oauth.flow import build_authorization_url, handle_callback, revoke_credential
 from oauth.providers import PROVIDERS
-from api.middleware.auth import get_current_user, get_current_user_flexible
+from api.middleware.auth import get_current_user, get_current_user_flexible, _user_from_token
 
 router = APIRouter()
+
+_bearer = HTTPBearer(auto_error=False)
+
+
+async def _get_connect_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
+    oauth_token: Optional[str] = Query(default=None, alias="token"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Auth for the connect endpoint — accepts Bearer header or ?token= query param.
+    The query param is needed because the browser follows the OAuth redirect without
+    setting custom headers, so we accept the short-lived access token in the URL."""
+    if credentials:
+        return await _user_from_token(credentials.credentials, db)
+    if oauth_token:
+        return await _user_from_token(oauth_token, db)
+    raise HTTPException(status_code=401, detail="Not authenticated")
 
 
 @router.get("/connect/{provider}")
@@ -18,7 +38,7 @@ async def connect_provider(
     provider: str,
     label: str = Query(default=None),
     db: AsyncSession = Depends(get_db),
-    user=Depends(get_current_user_flexible),
+    user=Depends(_get_connect_user),
 ):
     if provider not in PROVIDERS:
         raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")

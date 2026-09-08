@@ -56,8 +56,47 @@ def diff_versions(v1: WorkflowVersion, v2: WorkflowVersion) -> dict:
     nodes1 = {n["id"]: n for n in v1.definition.get("nodes", [])}
     nodes2 = {n["id"]: n for n in v2.definition.get("nodes", [])}
 
-    added = [n for nid, n in nodes2.items() if nid not in nodes1]
-    removed = [n for nid, n in nodes1.items() if nid not in nodes2]
-    modified = [n for nid, n in nodes2.items() if nid in nodes1 and nodes1[nid] != n]
+    nodes_added = [n for nid, n in nodes2.items() if nid not in nodes1]
+    nodes_removed = [n for nid, n in nodes1.items() if nid not in nodes2]
+    nodes_changed = [n for nid, n in nodes2.items() if nid in nodes1 and nodes1[nid] != n]
 
-    return {"added_nodes": added, "removed_nodes": removed, "modified_nodes": modified}
+    # Build per-node config change details for modified nodes
+    config_changes: dict = {}
+    for n in nodes_changed:
+        nid = n["id"]
+        old_data = nodes1[nid].get("data", {})
+        new_data = n.get("data", {})
+        changes: dict = {}
+        all_keys = set(old_data) | set(new_data)
+        for key in all_keys:
+            old_val = old_data.get(key)
+            new_val = new_data.get(key)
+            if old_val != new_val:
+                changes[key] = {"old": old_val, "new": new_val}
+        if changes:
+            config_changes[nid] = changes
+
+    # Edge diff
+    def edge_key(e: dict) -> str:
+        return f"{e.get('source', '')}→{e.get('target', '')}"
+
+    edges1 = {edge_key(e): e for e in v1.definition.get("edges", [])}
+    edges2 = {edge_key(e): e for e in v2.definition.get("edges", [])}
+    edges_added = [e for k, e in edges2.items() if k not in edges1]
+    edges_removed = [e for k, e in edges1.items() if k not in edges2]
+
+    return {
+        "nodes_added": nodes_added,
+        "nodes_removed": nodes_removed,
+        "nodes_changed": nodes_changed,
+        "edges_added": edges_added,
+        "edges_removed": edges_removed,
+        "config_changes": config_changes,
+        "summary": {
+            "added": len(nodes_added),
+            "removed": len(nodes_removed),
+            "changed": len(nodes_changed),
+            "edges_added": len(edges_added),
+            "edges_removed": len(edges_removed),
+        },
+    }

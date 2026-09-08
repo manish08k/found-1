@@ -202,23 +202,23 @@ async def debug_execution(
     execution = await _load(execution_id, user.id, db)
     node_results = execution.node_results or {}
 
-    debug_nodes = []
+    debug_node_results: dict = {}
     for node_id, result in node_results.items():
         if not isinstance(result, dict):
-            debug_nodes.append({"node_id": node_id, "raw": result})
+            debug_node_results[node_id] = {"status": "unknown", "raw": result}
             continue
 
-        debug_nodes.append({
-            "node_id": node_id,
+        debug_node_results[node_id] = {
             "status": result.get("status", "unknown"),
             "input_data": result.get("input_data"),
             "output_data": result.get("output") or result.get("output_data"),
             "error": result.get("error"),
+            "error_traceback": result.get("error_traceback"),
             "started_at": result.get("started_at"),
             "finished_at": result.get("finished_at"),
             "duration_ms": result.get("duration_ms"),
             "retries": result.get("retries", 0),
-        })
+        }
 
     return {
         "execution_id": execution.id,
@@ -228,7 +228,7 @@ async def debug_execution(
         "error": execution.error,
         "started_at": execution.started_at.isoformat() if execution.started_at else None,
         "finished_at": execution.finished_at.isoformat() if execution.finished_at else None,
-        "nodes": debug_nodes,
+        "node_results": debug_node_results,
     }
 
 

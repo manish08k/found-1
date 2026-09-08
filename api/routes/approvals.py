@@ -63,6 +63,35 @@ async def list_approvals(
     return {"approvals": [_serialize(a) for a in result.scalars().all()]}
 
 
+@router.get("/history")
+async def approval_history(
+    page: int = 1,
+    page_size: int = 50,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Audit history of all approval decisions made by the user or across their workflows."""
+    stmt = (
+        select(Approval)
+        .join(Execution, Execution.id == Approval.execution_id)
+        .join(Workflow, Workflow.id == Execution.workflow_id)
+        .where(
+            Workflow.owner_id == user.id,
+            Approval.status != "pending",
+        )
+        .order_by(Approval.decided_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    result = await db.execute(stmt)
+    approvals = result.scalars().all()
+    return {
+        "history": [_serialize(a) for a in approvals],
+        "page": page,
+        "page_size": page_size,
+    }
+
+
 @router.get("/{approval_id}")
 async def get_approval(approval_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     return _serialize(await _owned_approval(approval_id, user, db))
@@ -105,16 +134,11 @@ async def decide_approval(
         raise HTTPException(status_code=404, detail="The execution this approval belongs to no longer exists")
 
     if body.decision == "reject":
-        # Rejecting stops the workflow here — mark it failed with a clear,
-        # specific reason rather than leaving it stuck in `waiting` forever.
         execution.status = ExecutionStatus.failed
         execution.error = f"Rejected at approval.wait node '{approval.node_id}' by user {user.id}"
         await db.commit()
         return {"status": "rejected", "execution_status": execution.status.value}
 
-    # Approved: mark this node's result as approved (so the resumed run's
-    # "already completed" check treats it as done, not something to
-    # re-pause on) and re-dispatch the SAME execution to resume from here.
     node_results = dict(execution.node_results or {})
     node_results[approval.node_id] = {
         "status": "success",
@@ -132,32 +156,3 @@ async def decide_approval(
         queue="workflows",
     )
     return {"status": "approved", "execution_status": "resuming"}
-
-
-@router.get("/history")
-async def approval_history(
-    page: int = 1,
-    page_size: int = 50,
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    """Audit history of all approval decisions made by the user or across their workflows."""
-    stmt = (
-        select(Approval)
-        .join(Execution, Execution.id == Approval.execution_id)
-        .join(Workflow, Workflow.id == Execution.workflow_id)
-        .where(
-            Workflow.owner_id == user.id,
-            Approval.status != "pending",
-        )
-        .order_by(Approval.decided_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    )
-    result = await db.execute(stmt)
-    approvals = result.scalars().all()
-    return {
-        "history": [_serialize(a) for a in approvals],
-        "page": page,
-        "page_size": page_size,
-    }

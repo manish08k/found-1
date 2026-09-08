@@ -29,7 +29,8 @@ async def get_versions(
     versions = await list_versions(db, workflow_id)
     return [
         {"version": v.version, "change_summary": v.change_summary,
-         "created_by": v.created_by, "created_at": v.created_at.isoformat()}
+         "created_by": v.created_by, "created_at": v.created_at.isoformat(),
+         "is_published": getattr(v, "is_published", False) or False}
         for v in versions
     ]
 

@@ -184,6 +184,18 @@ async def rename_credential(
     return _serialize(cred)
 
 
+@router.delete("/{credential_id}")
+async def delete_credential(
+    credential_id: str,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    cred = await _get_owned(credential_id, user.id, db)
+    from oauth.flow import revoke_credential
+    await revoke_credential(credential_id, db)
+    return {"ok": True}
+
+
 @router.post("/{credential_id}/test")
 async def test_credential(
     credential_id: str,

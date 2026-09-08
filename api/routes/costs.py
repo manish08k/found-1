@@ -127,6 +127,7 @@ async def get_cost_summary(
         by_model[key] = {
             "input_tokens": row.total_input or 0,
             "output_tokens": row.total_output or 0,
+            "total_tokens": (row.total_input or 0) + (row.total_output or 0),
             "cost_usd": round(cost / 1_000_000, 6),
             "call_count": row.call_count,
         }
@@ -150,10 +151,13 @@ async def get_cost_summary(
         for r in wf_rows
     }
 
+    execution_count = len(execution_ids)
+    total_cost_usd = round(total_cost / 1_000_000, 6)
     return {
-        "total_cost_usd": round(total_cost / 1_000_000, 6),
+        "total_cost_usd": total_cost_usd,
         "total_tokens": total_tokens,
-        "execution_count": len(execution_ids),
+        "execution_count": execution_count,
+        "avg_cost_per_execution": round(total_cost_usd / execution_count, 6) if execution_count > 0 else 0.0,
         "by_model": by_model,
         "by_workflow": by_workflow,
         "period_days": days,

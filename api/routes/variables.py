@@ -93,6 +93,7 @@ async def get_variable(
     return _serialize(var)
 
 
+@router.patch("/{var_id}")
 @router.put("/{var_id}")
 async def update_variable(
     var_id: str,
